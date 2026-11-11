@@ -45,6 +45,7 @@ const RULES = [
     "#perm-camera": "chip-permission",
     "#perm-mic": "chip-permission",
     "#context": "chip-context",
+    "#speech": "chip-speech",
     "#help-chip": "help",
     "#status": "status",
     "#camera-device": "camera-device",
@@ -80,7 +81,7 @@ const RULES = [
 // The chips' and buttons' own text is what's underlined, not their whole box.
 const MARK = RULES.map(([, , mark]) => mark)
   .filter(Boolean)
-  .map((m) => (/^#(secure|perm-camera|perm-mic|context|help-chip)$/.test(m) ? `${m} .chip-text` : m === "#status" ? "#status .pill-label" : m === "#meters" ? ".meter-name" : m));
+  .map((m) => (/^#(secure|perm-camera|perm-mic|context|speech|help-chip)$/.test(m) ? `${m} .chip-text` : m === "#status" ? "#status .pill-label" : m === "#meters" ? ".meter-name" : m));
 
 // Words of art in the page's own help text, by the topic that explains them.
 const TERMS = [

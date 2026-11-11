@@ -23,6 +23,7 @@
         <span class="chip" id="perm-camera" data-state="unloaded"><span class="dot"></span><span class="chip-text">Camera</span></span>
         <span class="chip" id="perm-mic" data-state="unloaded"><span class="dot"></span><span class="chip-text">Microphone</span></span>
         <span class="chip" id="context" data-state="unloaded"><span class="dot"></span><span class="chip-text">Audio off</span></span>
+        <span class="chip" id="speech" data-state="unloaded"><span class="dot"></span><span class="chip-text">Captions</span></span>
       </div>
     </header>
 
@@ -101,6 +102,7 @@
               <div class="monitor">
                 <video id="preview" muted playsinline autoplay aria-label="What the source sends"></video>
                 <video id="player" class="when-file" controls playsinline preload="metadata" aria-label="The media file"></video>
+                <p class="captions" id="captions" aria-label="Live captions" hidden><span class="caption-final"></span><span class="caption-interim"></span></p>
                 <div class="monitor-empty" id="monitor-empty">
                   <span class="when-camera">Press <b>Start preview</b> to see and hear the camera and microphone, or <b>Record</b> to start a take straight away.</span>
                   <span class="when-cameras">Two cameras side by side in one picture: the first on the left, the second on the right, with the microphone if <b>audio</b> is on. Pick the same camera twice to see the two keep in step.</span>

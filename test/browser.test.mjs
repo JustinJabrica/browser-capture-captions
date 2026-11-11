@@ -10,6 +10,10 @@
 // takes can be checked against what went in; Firefox's fake devices play a
 // tone and a coloured picture.
 //
+// The caption tests need a speech model on the server, so that no test waits
+// on a download: npm run download-model whisper-tiny.en. Without it they are
+// skipped, and the run says so.
+//
 // Env: BROWSER_PATH (browser binary), BASE_URL, HEADFUL=1 to watch it run,
 // DUMPIO=1 for the browser's logs.
 
@@ -141,6 +145,15 @@ await page.evaluate(async () => {
 await page.reload();
 await page.waitForFunction(() => window.captureBench?.state() === "idle");
 
+// Captions are on by default. The capture tests run without them, as the
+// capture bench they came from did; the caption tests turn them on.
+const CAPTION_MODEL = "whisper-tiny.en";
+const hasModel = await page.evaluate(async (id) => {
+  const { localModels } = await import("./page/captions.js");
+  const { modelDir, resolve } = await import("./src/speech/registry.js");
+  return (await localModels()).includes(modelDir(resolve(id)));
+}, CAPTION_MODEL);
+
 // Sets bench parameters the way a person would, through their controls.
 async function setParams(values) {
   await page.evaluate((values) => {
@@ -228,6 +241,9 @@ async function checkSolo(take) {
     return out;
   }, take.id);
   const details = [];
+  // A copy counts its time from where the recording starts: its earliest track's first packet, which is
+  // usually 0. (The WebCodecs recorder's first video frame can arrive a frame late, and then nothing is at 0.)
+  const recordingStart = Math.max(0, Math.min(...r.whole.tracks.map((t) => t.firstTimestamp).filter(Number.isFinite)));
   for (const kind of ["audio", "video"]) {
     const solo = r[kind];
     assert(solo, `no ${kind}-only file`);
@@ -237,13 +253,24 @@ async function checkSolo(take) {
     assert(track.codec === original.codec, `${kind}: ${track.codec}, from ${original.codec}`);
     assert(track.packets === original.packets, `${kind}: ${track.packets} packets, from ${original.packets}`);
     assert(track.keyFrames === original.keyFrames, `${kind}: ${track.keyFrames} key frames, from ${original.keyFrames}`);
-    assert(near(track.firstTimestamp, original.firstTimestamp, 0.002), `${kind} starts at ${track.firstTimestamp} s, from ${original.firstTimestamp} s`);
+    // 2 ms, with room for the rounding of two three-decimal numbers.
+    assert(
+      near(track.firstTimestamp, original.firstTimestamp - recordingStart, 0.0025),
+      `${kind} starts at ${track.firstTimestamp} s, from ${original.firstTimestamp} s in a recording that starts at ${recordingStart} s`,
+    );
     details.push(`${kind}: ${track.codec} in .${solo.ext} (${solo.type}), ${track.packets} packets`);
   }
   assert(r.audio.decoded != null && near(r.audio.decoded, r.decoded, 0.1), `the sound on its own decodes to ${r.audio.decoded} s, the recording to ${r.decoded} s`);
   assert(r.video.loads === true, `the picture on its own doesn't load: ${r.video.loads}`);
   return { detail: details.join(" · "), ext: { audio: r.audio.ext, video: r.video.ext } };
 }
+
+await test("captions are on at first, and off leaves the speech model unloaded", async () => {
+  const first = await page.evaluate(() => ({ on: window.captureBench.params.get("captions"), chip: document.querySelector("#speech").textContent.trim() }));
+  assert(first.on === true, "captions aren't on by default");
+  await setParams({ captions: false });
+  return `chip: ${first.chip}`;
+});
 
 await test("the bench loads, in a secure context, with this browser's formats", async () => {
   const info = await page.evaluate(() => ({
@@ -253,7 +280,7 @@ await test("the bench loads, in a secure context, with this browser's formats", 
   }));
   assert(info.secure === "ready", "not a secure context");
   assert(info.types.length > 0, "MediaRecorder records nothing");
-  assert(info.tabs.join() === "Each start,Each record,WebCodecs,Analysis", info.tabs.join());
+  assert(info.tabs.join() === "Each start,Each record,WebCodecs,Captions,Analysis", info.tabs.join());
   return `${info.types.length} recordable types: ${info.types.slice(0, 3).join(", ")}…`;
 });
 
@@ -479,16 +506,19 @@ async function pausedTake() {
   await sleep(2500);
   await page.click("#pause");
   await page.waitForFunction(() => window.captureBench.state() === "paused");
+  // How long the pause really was: a busy page (headless Firefox encoding on its main thread) answers a click late.
+  const pausedAt = Date.now();
   await sleep(1500);
   await page.click("#pause");
   await page.waitForFunction(() => window.captureBench.state() === "recording");
+  const pausedFor = Date.now() - pausedAt;
   await sleep(2500);
   await page.click("#stop");
   await page.waitForFunction((id) => window.captureBench.latest && window.captureBench.latest.id !== id && window.captureBench.state() !== "analysing", { timeout: 60000 }, before);
   const t = await page.evaluate(() => window.captureBench.latest);
   await closeSource();
   const m = t.analysis.match;
-  assert(near(t.recorder.pausedMs, 1500, 300), `paused ${t.recorder.pausedMs} ms`);
+  assert(near(t.recorder.pausedMs, pausedFor, 300), `paused ${t.recorder.pausedMs} ms, where the test paused for about ${pausedFor} ms`);
   assert(near(t.analysis.tap.duration, t.wallS, 0.25), `tap ${t.analysis.tap.duration} s against ${t.wallS} s recorded`);
   assert(near(t.analysis.decoded?.duration, t.wallS, 0.25), `the file's sound is ${t.analysis.decoded?.duration} s against ${t.wallS} s recorded`);
   assert(Math.abs(m.endS) < 0.25, `ends ${m.endS} s against the tap`);
@@ -674,6 +704,91 @@ await test("takes: saved, listed, exported and imported back", async () => {
   assert(rows === r.before, `${rows} rows in the Takes table`);
   return `${r.before} takes round-tripped through Export and Import`;
 });
+
+// --- Captions ---------------------------------------------------------------------------------
+
+await test("captions off: takes were recorded with no speech model loaded", async () => {
+  const s = await page.evaluate(async () => {
+    const { engine } = await import("./src/speech/core.js");
+    return { engine: engine.state, chip: document.querySelector("#speech").textContent.trim(), shown: !document.querySelector("#captions").hidden };
+  });
+  assert(s.engine === "unloaded", `the speech engine is ${s.engine}`);
+  assert(s.chip === "Captions off", `the chip says "${s.chip}"`);
+  assert(!s.shown, "the caption overlay is showing");
+  return `engine ${s.engine}, chip "${s.chip}"`;
+});
+
+if (!hasModel) {
+  console.log(`SKIP  live captions: ${CAPTION_MODEL} isn't on the server (npm run download-model ${CAPTION_MODEL})`);
+} else {
+  // Opens a source with captions on and collects what the overlay shows, every 100 ms, until done(seen, run) or the timeout.
+  async function watchCaptions(source, done, { timeout = 60000, file } = {}) {
+    await setParams({ captions: true, ccModel: CAPTION_MODEL });
+    await page.evaluate((s) => window.captureBench.useSource(s), source);
+    if (file) await page.select("#sample", file);
+    await page.click("#start");
+    const seen = [];
+    const started = Date.now();
+    let state;
+    while (Date.now() - started < timeout) {
+      state = await page.evaluate(() => {
+        const c = window.captureBench.captions;
+        const run = c.last;
+        return { text: c.text, shown: !document.querySelector("#captions").hidden, finals: run?.finals ?? [], interims: run?.interims ?? 0, bench: window.captureBench.state(), chip: document.querySelector("#speech").dataset.state };
+      });
+      if (state.text && seen.at(-1) !== state.text) seen.push(state.text);
+      if (done(seen, state)) break;
+      await sleep(100);
+    }
+    return { seen, state, seconds: (Date.now() - started) / 1000 };
+  }
+  const words = (text) => text.toLowerCase().replace(/[^a-z' ]/g, "").replace(/\s+/g, " ").trim();
+
+  if (!isFirefox) {
+    await test("live captions: the fake microphone's sentence appears over the preview (Chromium)", async () => {
+      try {
+        const { seen, state, seconds } = await watchCaptions("camera", (seen, s) => s.finals.length >= 2);
+        const engine = await page.evaluate(async () => (await import("./src/speech/core.js")).engine.info);
+        assert(state.finals.length >= 2, `${state.finals.length} final captions in ${seconds.toFixed(0)} s; the overlay showed: ${seen.join(" | ") || "nothing"}`);
+        for (const f of state.finals) assert(words(f.transcript).includes("quick brown fox"), `heard "${f.transcript}"`);
+        assert(seen.some((t) => words(t).includes("the quick brown fox jumps over the lazy dog")), `the overlay showed: ${seen.join(" | ")}`);
+        assert(state.chip === "ready", `the Captions chip is ${state.chip}`);
+        assert(engine.from === "same-origin", `the model came from ${engine.from}`);
+        assert(engine.crossOriginIsolated && engine.threads > 1, `${engine.threads} thread(s), cross-origin isolated: ${engine.crossOriginIsolated}`);
+        // fox.wav loops every 4.83 s: the second sentence starts one loop after the first.
+        const [a, b] = state.finals;
+        assert(a.end > a.start && b.start >= a.end, `times out of order: ${a.start}-${a.end}, ${b.start}-${b.end}`);
+        assert(near((b.start - a.start) % 4.83, 0, 0.3) || near((b.start - a.start) % 4.83, 4.83, 0.3), `sentences ${(b.start - a.start).toFixed(2)} s apart, in a file that repeats every 4.83 s`);
+        const late = state.finals.map((f) => f.latency);
+        return `"${a.transcript}" at ${a.start}-${a.end} s and again at ${b.start} s · ${late.map((l) => `${l.toFixed(2)} s`).join(", ")} after each ended · ${state.interims} interim texts · ${engine.model} on ${engine.device}, ${engine.threads} threads, loaded in ${(engine.loadMs / 1000).toFixed(1)} s`;
+      } finally {
+        await closeSource();
+        await setParams({ captions: false });
+      }
+    });
+
+    await test("live captions: closing the source clears them", async () => {
+      const s = await page.evaluate(() => ({ shown: !document.querySelector("#captions").hidden, text: window.captureBench.captions.text, run: window.captureBench.captions.run }));
+      assert(!s.shown && !s.text && !s.run, JSON.stringify(s));
+    });
+  }
+
+  await test("live captions: a media file's speech is captioned as it plays", async () => {
+    try {
+      // The file plays to its end and the source closes; the first sentence's caption arrives while the second plays.
+      const { seen, state, seconds } = await watchCaptions("file", (seen, s) => s.bench === "idle" && seen.length > 0, { file: "test/fixtures/two-sentences.wav", timeout: 40000 });
+      assert(seen.length, `no caption in ${seconds.toFixed(0)} s`);
+      const all = seen.map(words).join(" | ");
+      assert(/speech recognition/.test(all), `the overlay showed: ${seen.join(" | ")}`);
+      return `${seen.length} texts shown, ${state.finals.length} final, ${state.interims} interim: "${state.finals[0]?.transcript ?? seen.at(-1)}"`;
+    } finally {
+      await closeSource();
+      await page.select("#sample", "test/fixtures/fox.wav");
+      await page.evaluate(() => window.captureBench.useSource("camera"));
+      await setParams({ captions: false });
+    }
+  });
+}
 
 await test("Browser view: the capability report", async () => {
   await page.evaluate(() => window.captureBench.showView("browser"));

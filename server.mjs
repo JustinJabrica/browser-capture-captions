@@ -17,7 +17,14 @@
 // mean one cache, one localStorage and one set of permissions for all.
 //
 // Sends cross-origin isolation headers, so the page can run transcription
-// with multi-threaded WebAssembly; capture works with or without them. Every file has an ETag (its size and modification time),
+// with multi-threaded WebAssembly; capture works with or without them.
+//
+// GET models/index.json lists the speech models downloaded into models/
+// (npm run download-model): { models: [folder] }. It is worked out from the
+// disk at each request and always answers 200, so the page can ask which
+// models are here instead of probing for their files (a 404 logs a console
+// error). A static host serves the same path as a file
+// (scripts/build-site.mjs writes it). Every file has an ETag (its size and modification time),
 // so a browser revalidating its copy gets the file again whenever it changed
 // at all.
 
@@ -28,6 +35,7 @@ import { stat } from "node:fs/promises";
 import { networkInterfaces } from "node:os";
 import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { modelsIndex } from "./scripts/lib/model-store.mjs";
 
 const root = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const port = Number(process.argv[2] ?? process.env.PORT ?? 8100);
@@ -75,6 +83,11 @@ async function handle(req, res) {
     return send(400, "Bad request");
   }
   if (path !== root && !path.startsWith(root + sep)) return send(403, "Forbidden");
+  if (url.pathname === "/models/index.json") {
+    const body = JSON.stringify(await modelsIndex().catch(() => ({ models: [] })));
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cross-Origin-Resource-Policy": "same-origin", "Cache-Control": "no-store" });
+    return res.end(req.method === "HEAD" ? undefined : body);
+  }
   // Nothing whose name starts with a dot is served (.git, and .cert with its keys above all):
   // with HOST=0.0.0.0 any device on the network can ask. The one exception is the local
   // certificate authority's certificate (scripts/make-cert.mjs), which is public, at /ca.pem,

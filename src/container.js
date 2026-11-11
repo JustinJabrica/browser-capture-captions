@@ -142,7 +142,9 @@ export function soloTargets(kind, codec, container = "") {
 // A recording's audio or its video ("audio" or "video") on its own: the
 // first track of that kind, its packets copied as they are (no re-encoding)
 // into the first of soloTargets() that holds its codec. The copy keeps the
-// recording's timeline, so it starts where it did in the recording. Resolves
+// recording's timeline, counted from where the recording starts (its
+// earliest track's first packet, which is usually 0): sound that began 70 ms
+// after the picture begins 70 ms into its own file. Resolves
 // to { blob, ext, container }, or null when the file has no such track or no
 // container takes its codec as it is.
 export async function extractTrack(blob, kind) {

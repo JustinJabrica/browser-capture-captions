@@ -78,7 +78,7 @@ test("every measurement, Takes column and download has a topic", () => {
 });
 
 test("every event the log can show has a topic", () => {
-  const app = read("page/app.js");
+  const app = read("page/app.js") + read("page/captions.js");
   const named = all(/log\.add\("(?:call|life|result|error)", "([^"]+)"/g, app);
   // Named at run time: the recorder's events, the track events, the capture method and the loopback's.
   const dynamic = ["start", "dataavailable", "pause", "resume", "stop", "error", "configure", "config", "ended", "mute", "unmute", "connectionstatechange", "captureStream()", "mozCaptureStream()", "Web Audio + canvas.captureStream()", "Web Audio"];

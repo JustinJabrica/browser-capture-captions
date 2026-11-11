@@ -1,0 +1,68 @@
+// Sources for the captions' explanations (topics-captions.js). Same shape as
+// sources-media.js: SOURCES[id] = [{ title, by, year?, where, url }]. The
+// links are ones automatic-speech-recognition-and-diarization cited;
+// npm run check:sources checks them.
+
+const WHISPER = {
+  title: "Robust Speech Recognition via Large-Scale Weak Supervision",
+  by: "Alec Radford, Jong Wook Kim, Tao Xu, Greg Brockman, Christine McLeavey, Ilya Sutskever (OpenAI)",
+  year: 2022,
+  where: "arXiv",
+  url: "https://arxiv.org/abs/2212.04356",
+};
+const WHISPER_CODE = { title: "openai/whisper", by: "OpenAI", where: "GitHub", url: "https://github.com/openai/whisper" };
+const TRANSFORMERS_JS = { title: "Transformers.js", by: "Hugging Face", where: "official docs", url: "https://huggingface.co/docs/transformers.js/index" };
+const TRANSFORMERS_ENV = { title: "Transformers.js API: env", by: "Hugging Face", where: "official docs", url: "https://huggingface.co/docs/transformers.js/api/env" };
+const TRANSFORMERS_WEBGPU = { title: "Transformers.js: Running models on WebGPU", by: "Hugging Face", where: "official docs", url: "https://huggingface.co/docs/transformers.js/guides/webgpu" };
+const ORT_WEB = { title: "ONNX Runtime Web", by: "Microsoft (ONNX Runtime)", where: "official docs", url: "https://onnxruntime.ai/docs/tutorials/web/" };
+const ORT_FLAGS = {
+  title: "ONNX Runtime Web: the 'env' flags and session options",
+  by: "Microsoft (ONNX Runtime)",
+  where: "official docs",
+  url: "https://onnxruntime.ai/docs/tutorials/web/env-flags-and-session-options.html",
+};
+const HUB = { title: "Hugging Face Hub: Models", by: "Hugging Face", where: "official docs", url: "https://huggingface.co/docs/hub/models" };
+const ONNX_COMMUNITY = { title: "onnx-community (ONNX Community) on Hugging Face", by: "ONNX Community", where: "Hugging Face", url: "https://huggingface.co/onnx-community" };
+const WEBGPU = {
+  title: "WebGPU (Candidate Recommendation Draft)",
+  by: "W3C GPU for the Web WG; editors Kai Ninomiya, Brandon Jones (Google), Jim Blandy (Mozilla)",
+  year: 2026,
+  where: "W3C",
+  url: "https://www.w3.org/TR/webgpu/",
+};
+const WEBGPU_MDN = { title: "WebGPU API", by: "MDN Web Docs (Mozilla)", year: 2026, where: "MDN", url: "https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API" };
+const VAD = { title: "Voice activity detection (Wikipedia)", by: "Wikipedia contributors", year: 2025, where: "Wikipedia", url: "https://en.wikipedia.org/wiki/Voice_activity_detection" };
+const WHISPERX = {
+  title: "WhisperX: Time-Accurate Speech Transcription of Long-Form Audio (INTERSPEECH 2023)",
+  by: "Max Bain, Jaesung Huh, Tengda Han, Andrew Zisserman",
+  year: 2023,
+  where: "arXiv",
+  url: "https://arxiv.org/abs/2303.00747",
+};
+const SILERO = { title: "Silero VAD: pre-trained enterprise-grade Voice Activity Detector", by: "Silero Team", year: 2024, where: "GitHub", url: "https://github.com/snakers4/silero-vad" };
+const WEBRTC_VAD = { title: "WebRTC source: common_audio/vad", by: "The WebRTC project (Google)", where: "webrtc.googlesource.com", url: "https://webrtc.googlesource.com/src/+/refs/heads/main/common_audio/vad/" };
+const LIBFVAD = { title: "libfvad: voice activity detection library based on WebRTC's VAD engine", by: "Daniel Pirch (dpirch)", where: "GitHub", url: "https://github.com/dpirch/libfvad" };
+const PY_WEBRTCVAD = { title: "py-webrtcvad: Python interface to the WebRTC Voice Activity Detector", by: "John Wiseman (wiseman)", where: "GitHub", url: "https://github.com/wiseman/py-webrtcvad" };
+const INTERIM = {
+  title: "SpeechRecognition: interimResults property",
+  by: "MDN Web Docs (Mozilla)",
+  year: 2025,
+  where: "MDN",
+  url: "https://developer.mozilla.org/en-US/docs/Web/API/SpeechRecognition/interimResults",
+};
+
+export const CAPTIONS_SOURCES = {
+  "group-captions": [WHISPER, TRANSFORMERS_JS, ORT_WEB],
+  captions: [TRANSFORMERS_JS, ORT_WEB],
+  ccModel: [WHISPER, WHISPER_CODE, HUB, ONNX_COMMUNITY, TRANSFORMERS_ENV],
+  ccDevice: [TRANSFORMERS_WEBGPU, ORT_WEB, ORT_FLAGS, WEBGPU, WEBGPU_MDN],
+  ccVad: [VAD, WHISPERX, WEBRTC_VAD, LIBFVAD, SILERO],
+  ccVadLevel: [PY_WEBRTCVAD, LIBFVAD],
+  ccVadThreshold: [SILERO],
+  ccMaxSegmentMs: [WHISPER],
+  ccInterim: [INTERIM, WHISPER],
+  ccInterimIntervalMs: [INTERIM],
+  "chip-speech": [ORT_FLAGS, TRANSFORMERS_JS],
+  "live-captions": [WHISPER],
+  "event-model": [TRANSFORMERS_ENV, HUB],
+};

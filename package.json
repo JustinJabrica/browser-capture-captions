@@ -12,6 +12,8 @@
     "test:chrome-for-testing": "node test/browser.test.mjs chrome-for-testing",
     "install:chrome-for-testing": "node scripts/install-chrome-for-testing.mjs",
     "test:unit": "node --test \"test/unit/*.test.mjs\"",
+    "test:engine": "node test/engine.test.mjs",
+    "download-model": "node scripts/download-model.mjs",
     "fixtures": "node scripts/make-fixtures.mjs",
     "cert": "node scripts/make-cert.mjs",
     "check:sources": "node scripts/check-sources.mjs",
@@ -20,6 +22,8 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@echogarden/fvad-wasm": "0.2.0",
+    "@huggingface/transformers": "4.3.2",
     "mediabunny": "1.65.1"
   },
   "devDependencies": {

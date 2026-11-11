@@ -557,12 +557,14 @@ says otherwise.
 - A finished utterance now goes ahead of a waiting interim, and an interim
   that is out of date is dropped from the queue. Before, they ran in the
   order they were queued.
-- **Firefox's VideoEncoder sometimes refuses a take it usually accepts.** In
+- **Firefox's VideoEncoder sometimes stopped a take it usually accepts.** In
   about one run of the tests in four, the WebCodecs recorder's camera take
   (VP8, 640 × 480) stopped after 0.06 to 0.13 s with `EncodingError: The
-  given encoding is not supported`; once, the two tests after it failed
-  with it. The same test passes in the other runs. Captions were off. Not
-  looked into yet.
+  given encoding is not supported`. Captions were off: it was the recorder,
+  giving the encoder a frame stamped earlier than the one before it. The
+  cause and the fix are under
+  [What the tests have shown so far](#what-the-tests-have-shown-so-far),
+  "Firefox's VP8 and VP9 encoders stop at a frame that goes back in time".
 
 ### Captions' limits, for now
 
@@ -675,7 +677,9 @@ the open, so each one can be set and measured:
   after that, and every frame is restamped before it's encoded. That has to
   happen before the encoder, because an audio encoder regroups its input: Opus
   makes 20 ms packets out of 10 ms blocks. Paused time is cut out, and audio
-  from before the take started is trimmed.
+  from before the take started is trimmed. A video frame that isn't later
+  than the one before it is left out: Firefox's VP8 and VP9 encoders stop
+  at one.
 - **Encoding.** The tab sets the codec, bitrate and its mode, latency mode,
   hardware acceleration, a key frame every so many seconds (WebCodecs makes
   one only when asked, after the first), and a queue limit: a frame that
@@ -691,8 +695,8 @@ the open, so each one can be set and measured:
 The take is analysed exactly as a MediaRecorder take: the same tap, probe,
 frame timing and test-signal read-back. So two takes of the same source, one
 from each recorder, compare the recorders like for like. The card adds each
-encoder's config, frames in, encoded and dropped, key frames asked for and
-written, the most frames waiting, and the encode latency. The Browser view
+encoder's config, frames in, encoded and dropped, frames left out for being
+out of time order, key frames asked for and written, the most frames waiting, and the encode latency. The Browser view
 lists the codecs this browser's encoders take, with software and with
 hardware preferred.
 
@@ -838,7 +842,51 @@ differ. That's what the saved takes and the Takes view are for.
 - **Key frames.** Edge's and Chrome for Testing's VP8 wrote exactly the key
   frames asked for. Firefox's wrote exactly those asked for from the test
   signal, but 34 or 35 for 3 asked over a 5 s take from its fake camera.
-  So when it adds its own depends on the picture.
+  So when it adds its own depends on the picture. Why isn't known: the
+  camera's frames kept one size and one pixel format through the take, and
+  frames made by the page (a still or a changing picture, from a canvas or
+  as I420) got no extra key frames in a one-off check.
+- **Firefox's VP8 and VP9 encoders stop at a frame that goes back in time.**
+  - *What was seen.* About one Firefox run of the tests in four, a WebCodecs
+    camera take stopped in its first tenth of a second with
+    `VideoEncoder: EncodingError: The given encoding is not supported`.
+  - *The cause.* Given frames stamped 48,500 µs and then 39,360 µs, Firefox
+    161's VP8 and VP9 encoders report exactly that error, every time. They
+    take two frames with the same time, and its AV1 encoder takes frames in
+    any order, as all of Edge 157's encoders do. Mediabunny refuses such a
+    packet as well when it goes back past a key frame.
+  - *Where the frame came from.* On the fallback path the recorder took its
+    first frame as soon as the `<video>` element started playing and stamped
+    it with the time at that moment, and every later frame with the time
+    `requestVideoFrameCallback()` gave. In the failing take the first three
+    frames were stamped 48,500, 39,360 and 105,860 µs: the second frame had
+    been presented before the first was taken.
+  - *The fix.* Every frame, the first included, now comes from
+    `requestVideoFrameCallback()`, and a frame that isn't later than the one
+    before it is left out and counted (**Frames out of time order** on the
+    take's card).
+  - *Frames still go back by themselves, less often.* A frame presented just
+    before **Resume** and delivered just after it has the whole pause taken
+    off its time, and landed about 10 ms before the last frame from before
+    the pause in 2 of 40 paused takes. Two frames in a row carried the same
+    presentation time twice in 3,740 frames (60 takes). Both are left out
+    now; the first would have stopped the take.
+  - *How often, before and after.* The error was hard to catch. Before the
+    fix: 25 camera takes in one page, each after a test-signal take as in
+    the tests, never failed; 1 of 30 paused takes stopped; and the suite's
+    WebCodecs tests in a loop failed in 1 run of 16. After it, no take was
+    stopped by an encoder in 16 more runs of that loop, 60 camera takes, 70
+    paused takes and five runs of all the Firefox tests. A test now hands
+    the recorder a frame stamped 80 ms early and checks the take goes on
+    without it, in both browsers.
+- **A paused take's sound sometimes reads as starting early in Firefox.**
+  On the fallback path, 3 or 4 paused takes in 30 measured the file's sound
+  0.14 to 0.40 s ahead of the tap's and ending as much after it, with the
+  same lengths; the rest were within 50 ms. The fix above didn't change
+  that (4 of 30 before it, 3 of 30 after), and once in five runs it failed
+  the paused-take test, at 0.58 s. Whether the file is off or the
+  measurement is (the waveform match on these takes ran from 0.01 to 0.99)
+  hasn't been looked into yet.
 - **What was asked for isn't always what's written.** H.264 was asked for as
   Constrained Baseline at level 3 (`avc1.42E01E`; the bench's level table
   starts at 3). Each encoder wrote its own profile flags and level into its

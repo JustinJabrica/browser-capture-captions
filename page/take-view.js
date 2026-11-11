@@ -214,6 +214,8 @@ export function metricGroups(t) {
           ["Frames from", esc(v.path), "", "wcFramePath"],
           ["Encoder config", config(v), v.supported === false ? "bad" : "", "m-wc-config"],
           ["Frames in · encoded · dropped", `${num(v.framesIn)} · ${num(v.encoded)} · ${num(v.dropped)}`, v.dropped ? "bad" : "good", "m-wc-dropped"],
+          // Takes made before these were counted have none.
+          ["Frames out of time order (left out)", v.outOfOrder == null ? "—" : num(v.outOfOrder), v.outOfOrder == null ? "" : v.outOfOrder ? "bad" : "good", "m-wc-order"],
           ["Key frames asked · written", `${num(v.keyFramesAsked)} · ${num(v.keyFramesOut)}`, v.keyFramesOut >= v.keyFramesAsked ? "good" : "bad", "m-wc-keyframes"],
           ["Most frames waiting", `${num(v.maxQueue)} (limit ${num(w.queueLimit)})`, "", "wcQueueLimit"],
           ["Encode latency (median · 95th · max)", latency(v.latencyMs), "", "m-wc-latency"],

@@ -142,6 +142,15 @@ export const WEBCODECS_TOPICS = {
     how: "The codec string here is what was asked for, and the MIME type Mediabunny gives the file repeats it. The stream itself can say otherwise, which the card's <b>File's video track</b> shows: in the end-to-end tests, H.264 asked for as Constrained Baseline at level 3 (<code>avc1.42E01E</code>) came out of Chrome for Testing's encoder as Baseline with no constraint flags at level 1.3 (<code>avc1.42000d</code>, for a 320 × 180 picture), and out of Edge's with two of the three flags at level 2 (<code>avc1.42c014</code>): each encoder picks its own level for the picture.",
     related: ["wcVideoCodec", "wcAudioCodec", "caps-encoders"],
   },
+  "m-wc-order": {
+    section: "recording",
+    name: "Frames out of time order",
+    short: "How many frames arrived stamped no later than the frame before them. The recorder leaves them out, because encoders and file writers need time to go forward.",
+    what: "Each frame the recorder gets carries a time: from <code>MediaStreamTrackProcessor</code> the track's own, and on the fallback path the moment the browser says the frame was captured, or presented. Now and then one is stamped earlier than its predecessor, or the same. Left in, the result depends on the browser: Firefox's VP8 and VP9 encoders stop the take with <code>EncodingError: The given encoding is not supported</code>, and Mediabunny refuses a packet that goes back past a key frame; Chromium's encoders take it and the file gets a frame out of order.",
+    how: "A frame is left out when its time on the take's timeline isn't later than the last frame sent to the encoder. The count is normally 0. In headless Firefox with its fake camera, two things made it 1: after <b>Resume</b>, a frame presented just before the button was pressed but delivered just after it lands about 10 ms before the last frame from before the pause (2 of 40 paused takes); and two frames in a row can carry the same presentation time (2 frames of 3,740 over 60 takes). The recorder also takes its first frame from <code>requestVideoFrameCallback</code> like every other, where it used to take one as soon as playback started and stamp it with the time at that moment: that first frame could be later than the presentation time of the second, which is how takes in Firefox came to stop in their first tenth of a second, a few in a hundred.",
+    best: "Anything above 0 is worth a look at <code>wcFramePath</code> and the source: it says the browser's frame times aren't steady.",
+    related: ["m-wc-dropped", "wcFramePath", "m-wc-first-frame", "event-error"],
+  },
   "m-wc-dropped": {
     section: "analysis",
     name: "Frames in · encoded · dropped",

@@ -495,7 +495,7 @@ function checkWebCodecs(t) {
   const sound = a && `${a.path}, ${a.channels} ch at ${a.sampleRate} Hz`;
   if (!v) return `audio only · ${a.config.codec} · ${sound}`;
   assert(v.encoded > 0 && v.keyFramesOut >= v.keyFramesAsked, `video: ${v.encoded} packets, key frames ${v.keyFramesOut} of ${v.keyFramesAsked} asked`);
-  return `${v.path} · ${v.config.codec}${a ? ` + ${a.config.codec} (${sound})` : ""} · ${v.framesIn} in, ${v.dropped} dropped · key frames ${v.keyFramesAsked} asked, ${v.keyFramesOut} written · latency ${v.latencyMs?.median} ms median, ${v.latencyMs?.max} max`;
+  return `${v.path} · ${v.config.codec}${a ? ` + ${a.config.codec} (${sound})` : ""} · ${v.framesIn} in, ${v.dropped} dropped, ${v.outOfOrder} out of order · key frames ${v.keyFramesAsked} asked, ${v.keyFramesOut} written · latency ${v.latencyMs?.median} ms median, ${v.latencyMs?.max} max`;
 }
 
 // Records about 2.5 s, pauses 1.5 s, records 2.5 s more: the take must leave
@@ -569,6 +569,41 @@ if (webcodecs) {
       const { t, detail } = await pausedTake();
       return `${detail} · ${checkWebCodecs(t)}`;
     } finally {
+      await setParams({ recorder: "mediarecorder", wcFramePath: "auto" });
+    }
+  });
+
+  await test("WebCodecs recorder: a frame stamped earlier than the one before it is left out, and the take goes on", async () => {
+    // Browsers' frame times do go back now and then, and Firefox's VP8 encoder stops at one that does
+    // ("EncodingError: The given encoding is not supported"). Here the recorder's own <video> (the one that
+    // isn't in the page) is told its fifth frame was taken 80 ms before it was.
+    await setParams({ recorder: "webcodecs", wcFramePath: "fallback" });
+    await page.evaluate(() => {
+      const original = HTMLVideoElement.prototype.requestVideoFrameCallback;
+      window.restoreFrameCallback = () => (HTMLVideoElement.prototype.requestVideoFrameCallback = original);
+      let n = 0;
+      HTMLVideoElement.prototype.requestVideoFrameCallback = function (callback) {
+        if (this.isConnected) return original.call(this, callback);
+        return original.call(this, (now, meta) => {
+          n++;
+          const at = meta.captureTime ?? meta.presentationTime;
+          callback(now, n === 5 ? { ...meta, captureTime: at - 80, presentationTime: at - 80 } : meta);
+        });
+      };
+    });
+    try {
+      const t = await recordTake("camera", 3000);
+      await closeSource();
+      const v = t.recorder.webcodecs.video;
+      assert(!t.recorder.error, `the take stopped: ${t.recorder.error}`);
+      assert(near(t.wallS, 3, 1), `recorded ${t.wallS} s of 3`);
+      // At least the one made here: now and then the browser stamps another earlier than its predecessor by itself.
+      assert(v.outOfOrder >= 1, `${v.outOfOrder} frames counted as out of order`);
+      assert(v.encoded === v.framesIn - v.outOfOrder - v.dropped, `${v.framesIn} frames in, ${v.outOfOrder} out of order, ${v.dropped} dropped, ${v.encoded} encoded`);
+      assert(t.analysis.video?.frames === v.encoded, `the file holds ${t.analysis.video?.frames} frames, ${v.encoded} were encoded`);
+      return `${v.framesIn} frames in, ${v.outOfOrder} out of order and left out, ${v.encoded} encoded and in the file · ${t.wallS} s recorded`;
+    } finally {
+      await page.evaluate(() => window.restoreFrameCallback());
       await setParams({ recorder: "mediarecorder", wcFramePath: "auto" });
     }
   });

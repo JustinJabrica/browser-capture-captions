@@ -1,10 +1,11 @@
-// One take, as a card: its recording to play, the tap's and the file's
-// waveforms one above the other, the measurements with a verdict where
-// there's a sensible bar, what was asked for against what the browser gave,
-// and the whole report. Shared by the bench (the latest take) and the Takes
-// view (the one opened).
+// One take, as a card: its recording to play, with its captions as
+// subtitles, the tap's and the file's waveforms one above the other, its
+// transcript, the measurements with a verdict where there's a sensible bar,
+// what was asked for against what the browser gave, and the whole report.
+// Shared by the bench (the latest take) and the Takes view (the one opened).
 
-import { bytes, esc, icon } from "./bench.js";
+import { asVtt, cueAt, toCues } from "../src/captions/subtitles.js";
+import { bytes, clock, esc, icon } from "./bench.js";
 
 const ms = (s) => (s == null ? "—" : `${Math.round(s * 1000)} ms`);
 const signedMs = (s) => (s == null ? "—" : `${s > 0 ? "+" : ""}${Math.round(s * 1000)} ms`);
@@ -124,6 +125,26 @@ export function metricGroups(t) {
       ],
     ]);
   }
+  // The captions said while the take recorded, as its report keeps them (without their text).
+  const live = t.transcripts?.live;
+  if (live) {
+    const e = live.engine ?? {};
+    const s = live.stats ?? {};
+    const c = live.clock ?? {};
+    const late = s.latencyS;
+    groups.push([
+      "Captions",
+      [
+        ["Speech model", `${esc(e.label ?? e.model ?? "?")} · ${e.device === "webgpu" ? "WebGPU" : `WebAssembly, ${num(e.threads)} thread${e.threads === 1 ? "" : "s"}`} · ${e.from === "same-origin" ? "this server" : "Hugging Face hub"}`, e.fallback ? "bad" : "", "m-cc-model"],
+        ["Captions · words · interim texts", `${num(s.segments)} · ${num(s.words)} · ${num(s.interims)}${live.incomplete ? " (the last are missing: the model was still working)" : ""}`, live.incomplete ? "bad" : "", "m-cc-segments"],
+        ["Caption delay (median · 95th · max)", late ? `${sec(late.median)} · ${sec(late.p95)} · ${sec(late.max)}` : "—", "", "m-cc-latency"],
+        ["Model time against speech", s.rtf == null ? "—" : `${s.rtf.toFixed(2)}× (${sec(s.speechS, 1)} of speech)`, s.rtf == null ? "" : s.rtf < 1 ? "good" : "bad", "m-cc-rtf"],
+        ["Take starts in the file at", c.offsetS == null ? "—" : `${signedMs(c.offsetS)} (${c.offsetFrom}${c.offsetFrom === "measured" && c.estimatedS != null ? `; estimated ${signedMs(c.estimatedS)}` : ""})`, c.offsetFrom === "measured" ? "good" : "", "m-cc-offset"],
+        ["Clipped at the take's edges · lost frames", `${num(s.clipped)} · ${num(c.lostFrames)}`, c.lostFrames ? "bad" : "", "m-cc-clipped"],
+        ["Word times", e.wordsFrom ? (e.wordsFrom === "align" ? "forced alignment" : e.wordsFrom === "frames" ? "the model's frames" : "Whisper's attention") : "estimated from the text", "", "ccWords"],
+      ],
+    ]);
+  }
   if (videoTrack || a.video) {
     groups.push([
       "Video",
@@ -236,6 +257,9 @@ export function cardHTML(t, { deletable = false } = {}) {
   const kinds = new Set((t.analysis?.file?.probe?.tracks ?? []).map((x) => x.type));
   const solo = (kind, title) =>
     has.file && kinds.has("audio") && kinds.has("video") ? `<button type="button" class="btn sm" data-download="${kind}" title="${esc(title)}">${icon("download")}${kind} only</button>` : "";
+  // Subtitles and the transcript, when the take has captions with something in them.
+  const spoken = (t.transcripts?.[t.transcripts?.chosen] ?? t.transcripts?.live)?.stats?.segments > 0;
+  const textButton = (key, label, title) => (spoken ? `<button type="button" class="btn sm" data-download="${key}" title="${esc(title)}">${icon("download")}${label}</button>` : "");
   return `
     <article class="take" data-id="${esc(t.id)}">
       <header class="block-head take-head">
@@ -248,6 +272,10 @@ export function cardHTML(t, { deletable = false } = {}) {
           ${solo("video", "The recording's picture on its own, its packets copied as they are")}
           ${fileButton("tap", "tap.wav", "The lossless tap, at the context's rate, every channel")}
           ${fileButton("pcm16k", "16k.wav", "The recording's audio as 16 kHz mono, ready for transcription")}
+          ${textButton("vtt", ".vtt", "Subtitles as WebVTT, timed on the recording")}
+          ${textButton("srt", ".srt", "Subtitles as SubRip")}
+          ${textButton("txt", ".txt", "The transcript as text, an utterance a line, with its times")}
+          ${textButton("transcript", "transcript.json", "The transcript with its times, the model and settings, and how it was placed on the recording")}
           <button type="button" class="btn sm" data-download="report">${icon("download")}report.json</button>
           ${deletable ? `<button type="button" class="btn sm" data-delete>${icon("clear")}<span class="label">Delete</span></button>` : ""}
         </div>
@@ -259,6 +287,11 @@ export function cardHTML(t, { deletable = false } = {}) {
               ${t.analysis.overview.tap ? `<figure><figcaption data-explain="m-tap">Tap</figcaption><canvas data-wave="tap" height="56"></canvas></figure>` : ""}
               ${t.analysis.overview.file ? `<figure><figcaption data-explain="m-decoded">File</figcaption><canvas data-wave="file" height="56"></canvas></figure>` : ""}
             </div>`
+          : ""
+      }
+      ${
+        t.transcripts?.live || t.transcripts?.final
+          ? `<section class="take-transcript"><h4 data-explain="take-transcript">Transcript</h4>${spoken ? `<ol class="transcript-list"></ol>` : `<p class="hint">Nothing was heard as speech while this take recorded.</p>`}</section>`
           : ""
       }
       <div class="metrics">${metricGroups(t)
@@ -293,16 +326,48 @@ export function drawWave(canvas, data) {
   }
 }
 
-// Fills a rendered card: its waveforms, and the video from the take's files.
-// Returns a function that releases the video's object URL.
-export function fillCard(card, t, media = {}) {
+// Fills a rendered card: its waveforms, the video from the take's files with
+// the transcript as its subtitles, and the transcript's rows, which follow
+// the playback and seek it when clicked. transcript: the take's (with its
+// segments), or null; cueOptions: toCues()'s limits. Returns a function that
+// releases the object URLs.
+export function fillCard(card, t, media = {}, { transcript = null, cueOptions = {} } = {}) {
   for (const canvas of card.querySelectorAll("canvas[data-wave]")) drawWave(canvas, t.analysis.overview[canvas.dataset.wave]);
   const video = card.querySelector(".take-video");
   const source = media.seekable ?? media.file;
-  if (!video || !source) return () => {};
-  const url = URL.createObjectURL(source);
-  video.src = url;
-  return () => URL.revokeObjectURL(url);
+  const urls = [];
+  if (video && source) {
+    urls.push(URL.createObjectURL(source));
+    video.src = urls[0];
+  }
+  const list = card.querySelector(".take-transcript .transcript-list");
+  if (list && transcript?.segments?.length) {
+    list.innerHTML = transcript.segments
+      .map((s, i) => `<li data-index="${i}"${s.clipped ? ' class="clipped" title="Cut at the take\'s edge"' : ""}><time>${clock(s.start)}–${clock(s.end)}</time><span>${esc(s.transcript)}</span></li>`)
+      .join("");
+    if (video && source) {
+      const cues = toCues(transcript.segments, { ...cueOptions, duration: t.analysis?.file?.probe?.duration ?? Infinity });
+      urls.push(URL.createObjectURL(new Blob([asVtt(cues)], { type: "text/vtt" })));
+      const track = Object.assign(document.createElement("track"), { kind: "captions", label: transcript.kind === "final" ? "Captions (second pass)" : "Captions (live)", srclang: "en", src: urls[1], default: true });
+      video.append(track);
+      // Some browsers leave a track added by script hidden until told.
+      track.addEventListener("load", () => (track.track.mode = "showing"));
+      // The row being said is marked as the recording plays, and a click on a row goes there.
+      const rows = [...list.children];
+      video.addEventListener("timeupdate", () => {
+        const now = cueAt(transcript.segments, video.currentTime);
+        for (const row of rows) row.classList.toggle("now", transcript.segments[row.dataset.index] === now);
+      });
+      list.addEventListener("click", (e) => {
+        const row = e.target.closest("li[data-index]");
+        if (!row) return;
+        video.currentTime = transcript.segments[row.dataset.index].start;
+        video.play().catch(() => {});
+      });
+      list.classList.add("seeks");
+    }
+  }
+  return () => urls.forEach((url) => URL.revokeObjectURL(url));
 }
 
 // --- Asked for, and what the browser gave ------------------------------------------

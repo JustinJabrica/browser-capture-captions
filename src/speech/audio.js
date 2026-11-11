@@ -71,8 +71,9 @@ function captureError(code, err) {
 // 20 ms frames. Without a detector it uses its energy rule, whose noise floor
 // adapts while nobody is speaking; a detector (vad.js) decides instead, and
 // the energy rule only drives the sound handler. Handlers get the sample
-// offset where each utterance starts, counted from the first push, and
-// optionally vad(score, speech) for every frame. A detector that answers
+// offset where each utterance starts, counted from the first push (segment
+// also gets { cut }: whether cut() ended it), and optionally vad(score,
+// speech) for every frame. A detector that answers
 // asynchronously (Silero) delays the handlers; flush() then returns a Promise
 // that resolves once the last frames are decided.
 export class Segmenter {
@@ -125,16 +126,18 @@ export class Segmenter {
 
   // Ends the current utterance where it is and carries on listening: for a
   // boundary the caller sets (a take starting, pausing or stopping), so no
-  // utterance spans it. Unlike flush() it leaves the detector's own state
-  // alone. Returns a Promise when the detector is still deciding frames; the
-  // utterance then ends with the frames heard by the time it resolves.
+  // utterance spans it. The segment handler is told ({ cut: true }): the
+  // speech went on past the cut. Unlike flush() it leaves the detector's own
+  // state alone. Returns a Promise when the detector is still deciding
+  // frames; the utterance then ends with the frames heard by the time it
+  // resolves.
   cut() {
     if (!this.decided) {
-      if (this.frames) this.#endSegment(this.silent);
+      if (this.frames) this.#endSegment(this.silent, true);
       return undefined;
     }
     return this.decided.then(() => {
-      if (this.frames) this.#endSegment(this.silent);
+      if (this.frames) this.#endSegment(this.silent, true);
     });
   }
 
@@ -187,7 +190,8 @@ export class Segmenter {
     }
   }
 
-  #endSegment(silent) {
+  // cut: ended by cut(), not by a pause, the length limit or the stream's end.
+  #endSegment(silent, cut = false) {
     const frames = this.frames;
     const keep = frames.length - Math.max(0, silent - this.trailFrames);
     const id = this.segmentId;
@@ -195,7 +199,7 @@ export class Segmenter {
     this.frames = null;
     this.run = 0;
     if (voiced >= this.minVoicedFrames) {
-      this.handlers.segment(id, concat(frames.slice(0, keep)), this.startSample);
+      this.handlers.segment(id, concat(frames.slice(0, keep)), this.startSample, { cut });
     } else {
       this.handlers.discard(id);
     }

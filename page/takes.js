@@ -1,9 +1,10 @@
 // Saved takes, in IndexedDB: every recording's report (settings, what the
 // browser gave, the recorder's stats, the probe and the metrics) in one
-// store, and its files (the recording, a seekable copy when one was made,
-// the tap's WAV and the 16 kHz WAV) in another, so the reports list quickly
-// and the files load only when a take is opened. Reports move between
-// browsers as JSON (Export and Import); files are downloaded separately.
+// store, its files (the recording, a seekable copy when one was made, the
+// tap's WAV and the 16 kHz WAV) in another, and its transcripts in a third,
+// so the reports list quickly and the rest loads only when a take is opened.
+// Reports and transcripts move between browsers as JSON (Export and
+// Import); files are downloaded separately.
 //
 // A report:
 //   { id, createdAt, name, source: { kind, label, method?, pipeline: { mixMic, webrtc } },
@@ -12,20 +13,35 @@
 //     tracks: [{ kind, label, settings, capabilities, constraints, events }],
 //     recorder: TakeRecorder stats | null, wallS, webrtc?: loopback info,
 //     analysis: analyseTake()'s analysis, settings: the bench's settings,
-//     media: { file, seekable, tap, pcm16k } (which files were kept), imported? }
+//     media: { file, seekable, tap, pcm16k } (which files were kept),
+//     transcripts: { live, final (each a transcript without its segments, or null), chosen }, imported? }
+//
+// A transcript (page/captions.js makes them):
+//   { format: "caption-bench-transcript/1", takeId, kind: "live" | "final", createdAt,
+//     engine: { model, dtype, device, threads, crossOriginIsolated, fallback, wordsFrom, from },
+//     settings: the Captions tab's, as the run used them,
+//     clock: { rate, firstFedFrame, startFrame, endFrame, gaps, lostFrames,
+//              offsetS, offsetFrom, estimatedS, waveScore, driftS }   how its times were placed
+//     segments: [{ id, start, end, transcript, confidence, speaker, words?, latency?, ms?, clipped?, frames }],
+//     stats: { segments, words, speechS, latencyS, rtf, interims }, incomplete? }
+//   start and end are seconds on the saved file's timeline.
 
 const DB = "caption-bench";
 const REPORTS = "takes";
 const MEDIA = "media";
+const TRANSCRIPTS = "transcripts";
 export const TAKES_FORMAT = "caption-bench-takes/1";
 
 let opening = null;
 function db() {
   opening ??= new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB, 1);
+    // Version 2 added the transcripts.
+    const request = indexedDB.open(DB, 2);
     request.onupgradeneeded = () => {
-      request.result.createObjectStore(REPORTS, { keyPath: "id" });
-      request.result.createObjectStore(MEDIA);
+      const names = request.result.objectStoreNames;
+      if (!names.contains(REPORTS)) request.result.createObjectStore(REPORTS, { keyPath: "id" });
+      if (!names.contains(MEDIA)) request.result.createObjectStore(MEDIA);
+      if (!names.contains(TRANSCRIPTS)) request.result.createObjectStore(TRANSCRIPTS);
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
@@ -46,13 +62,27 @@ async function transact(stores, mode, work) {
 }
 
 const KINDS = ["file", "seekable", "tap", "pcm16k"];
+export const TRANSCRIPT_KINDS = ["live", "final"];
 
-// Saves a report and its files ({ file, seekable, tap, pcm16k }, Blobs or null).
-export function saveTake(report, media = {}) {
+// What a report keeps of a transcript: everything but its segments.
+export const transcriptSummary = (t) => {
+  if (!t) return null;
+  const { segments, ...rest } = t;
+  return rest;
+};
+
+// Saves a report with its files ({ file, seekable, tap, pcm16k }, Blobs or
+// null) and its transcripts ({ live, final }, or null where there is none).
+export function saveTake(report, media = {}, transcripts = {}) {
   const kept = Object.fromEntries(KINDS.map((k) => [k, Boolean(media[k])]));
-  const record = { ...report, media: kept };
-  return transact([REPORTS, MEDIA], "readwrite", (tx) => {
+  const record = {
+    ...report,
+    media: kept,
+    transcripts: { live: transcriptSummary(transcripts.live), final: transcriptSummary(transcripts.final), chosen: report.transcripts?.chosen ?? (transcripts.final ? "final" : transcripts.live ? "live" : null) },
+  };
+  return transact([REPORTS, MEDIA, TRANSCRIPTS], "readwrite", (tx) => {
     for (const k of KINDS) if (media[k]) tx.objectStore(MEDIA).put(media[k], `${report.id}/${k}`);
+    for (const k of TRANSCRIPT_KINDS) if (transcripts[k]) tx.objectStore(TRANSCRIPTS).put(transcripts[k], `${report.id}/${k}`);
     tx.objectStore(REPORTS).put(record);
   }).then(() => record);
 }
@@ -73,27 +103,49 @@ export async function takeMedia(id) {
   return out;
 }
 
+// { live, final }: the take's transcripts, null where there is none.
+export async function takeTranscripts(id) {
+  const out = {};
+  await transact([TRANSCRIPTS], "readonly", (tx) => {
+    const store = tx.objectStore(TRANSCRIPTS);
+    for (const k of TRANSCRIPT_KINDS) {
+      const request = store.get(`${id}/${k}`);
+      request.onsuccess = () => (out[k] = request.result ?? null);
+    }
+  });
+  return out;
+}
+
 export function deleteTake(id) {
-  return transact([REPORTS, MEDIA], "readwrite", (tx) => {
+  return transact([REPORTS, MEDIA, TRANSCRIPTS], "readwrite", (tx) => {
     for (const k of KINDS) tx.objectStore(MEDIA).delete(`${id}/${k}`);
+    for (const k of TRANSCRIPT_KINDS) tx.objectStore(TRANSCRIPTS).delete(`${id}/${k}`);
     tx.objectStore(REPORTS).delete(id);
   });
 }
 
 export function clearTakes() {
-  return transact([REPORTS, MEDIA], "readwrite", (tx) => {
+  return transact([REPORTS, MEDIA, TRANSCRIPTS], "readwrite", (tx) => {
     tx.objectStore(MEDIA).clear();
+    tx.objectStore(TRANSCRIPTS).clear();
     tx.objectStore(REPORTS).clear();
   });
 }
 
+// Every report, oldest first, and every transcript by its take's id.
 export async function exportTakes() {
-  return JSON.stringify({ format: TAKES_FORMAT, exported: new Date().toISOString(), takes: await listTakes() }, null, 1);
+  const takes = await listTakes();
+  const transcripts = {};
+  for (const take of takes) {
+    const t = await takeTranscripts(take.id);
+    if (t.live || t.final) transcripts[take.id] = t;
+  }
+  return JSON.stringify({ format: TAKES_FORMAT, exported: new Date().toISOString(), takes, transcripts }, null, 1);
 }
 
-// Adds the reports in an export (or a bare array of them). A take with an id
-// already here keeps its files; others come without files, marked imported.
-// Returns how many were added.
+// Adds the reports in an export (or a bare array of them), with their
+// transcripts. A take with an id already here keeps its files; others come
+// without files, marked imported. Returns how many were added.
 export async function importTakes(text) {
   const data = JSON.parse(text);
   const takes = Array.isArray(data) ? data : data?.takes;
@@ -103,7 +155,11 @@ export async function importTakes(text) {
   for (const take of takes) {
     if (!take?.id || !take.source?.kind || !take.analysis) continue;
     const own = here.get(take.id);
-    await transact([REPORTS], "readwrite", (tx) => tx.objectStore(REPORTS).put(own ? { ...take, media: own.media } : { ...take, imported: true, media: {} }));
+    const transcripts = data?.transcripts?.[take.id] ?? {};
+    await transact([REPORTS, TRANSCRIPTS], "readwrite", (tx) => {
+      tx.objectStore(REPORTS).put(own ? { ...take, media: own.media } : { ...take, imported: true, media: {} });
+      for (const k of TRANSCRIPT_KINDS) if (transcripts[k]?.segments) tx.objectStore(TRANSCRIPTS).put(transcripts[k], `${take.id}/${k}`);
+    });
     added++;
   }
   return added;

@@ -69,7 +69,11 @@ class Lane {
   // a video frame is an instant, but an audio block arrives once it's full.
   place(rawUs, durationUs = 0) {
     const r = this.recorder;
-    if (this.offsetUs == null) this.offsetUs = nowUs() - r.t0Us - (rawUs + durationUs);
+    if (this.offsetUs == null) {
+      this.offsetUs = nowUs() - r.t0Us - (rawUs + durationUs);
+      // Kept with the take: on the tap's path rawUs is the context's own clock, so this places the file on it.
+      this.stats.offsetS = Math.round(this.offsetUs) / 1e6;
+    }
     return rawUs + this.offsetUs - r.pausedUs;
   }
 }

@@ -68,13 +68,14 @@ test("every control, chip and view the bench explains has a topic", () => {
 
 test("every measurement, Takes column and download has a topic", () => {
   const card = read("page/take-view.js");
-  const metricTopics = all(/, "((?:m-|event-)[\w-]+|mimeType|timeslice|webrtc)"\]/g, card);
+  const metricTopics = all(/, "((?:m-|event-)[\w-]+|mimeType|timeslice|webrtc|ccWords)"\]/g, card);
+  assert.ok(all(/textButton\("(\w+)"/g, card).length >= 4, "the transcript's downloads");
   assert.ok(metricTopics.length > 25, `${metricTopics.length} measurements found`);
   assert.deepEqual(missing(metricTopics), [], "measurements");
   assert.deepEqual(missing(all(/data-explain="([\w-]+)"/g, card)), [], "card captions");
   const compare = read("page/compare.js");
   assert.deepEqual(missing(all(/^ {2}\[\s*"(\w+)",/gm, compare).map((k) => `col-${k}`)), [], "columns");
-  assert.deepEqual(missing(["file", "seekable", "audio", "video", "tap", "pcm16k", "report"].map((k) => `download-${k}`)), [], "downloads");
+  assert.deepEqual(missing(["file", "seekable", "audio", "video", "tap", "pcm16k", "report", ...all(/textButton\("(\w+)"/g, card)].map((k) => `download-${k}`)), [], "downloads");
 });
 
 test("every event the log can show has a topic", () => {

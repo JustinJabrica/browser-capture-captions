@@ -51,7 +51,24 @@ const INTERIM = {
   url: "https://developer.mozilla.org/en-US/docs/Web/API/SpeechRecognition/interimResults",
 };
 
+const WEBVTT = { title: "WebVTT: The Web Video Text Tracks Format", by: "W3C Timed Text Working Group", year: 2019, where: "W3C Candidate Recommendation", url: "https://www.w3.org/TR/webvtt1/" };
+const WEBVTT_MDN = { title: "Web Video Text Tracks Format (WebVTT)", by: "MDN Web Docs (Mozilla)", where: "MDN", url: "https://developer.mozilla.org/en-US/docs/Web/API/WebVTT_API/Web_Video_Text_Tracks_Format" };
+const TRACK = { title: "<track>: The Embed Text Track element", by: "MDN Web Docs (Mozilla)", where: "MDN", url: "https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/track" };
+const SUBRIP = { title: "SubRip (Wikipedia)", by: "Wikipedia contributors", where: "Wikipedia", url: "https://en.wikipedia.org/wiki/SubRip" };
+const BBC_SUBTITLES = { title: "Subtitle Guidelines", by: "BBC", where: "bbc.co.uk", url: "https://www.bbc.co.uk/accessibility/forproducts/guides/subtitles/" };
+const WHISPER_TIMING = { title: "openai/whisper: timing.py (word timestamps from cross-attention and dynamic time warping)", by: "OpenAI", where: "GitHub", url: "https://github.com/openai/whisper/blob/main/whisper/timing.py" };
+const CURRENT_FRAME = { title: "AudioWorkletGlobalScope: currentFrame property", by: "MDN Web Docs (Mozilla)", where: "MDN", url: "https://developer.mozilla.org/en-US/docs/Web/API/AudioWorkletGlobalScope/currentFrame" };
+const WEB_AUDIO = { title: "Web Audio API 1.1", by: "W3C Audio Working Group", where: "W3C", url: "https://www.w3.org/TR/webaudio/" };
+
 export const CAPTIONS_SOURCES = {
+  "take-transcript": [WEBVTT, TRACK],
+  "captions-on-the-timeline": [CURRENT_FRAME, WEB_AUDIO],
+  ccWords: [WHISPER_TIMING, WHISPERX, WHISPER],
+  ccCueChars: [BBC_SUBTITLES, WEBVTT],
+  ccCueLines: [BBC_SUBTITLES],
+  ccCueSeconds: [BBC_SUBTITLES],
+  "download-vtt": [WEBVTT, WEBVTT_MDN, TRACK],
+  "download-srt": [SUBRIP],
   "group-captions": [WHISPER, TRANSFORMERS_JS, ORT_WEB],
   captions: [TRANSFORMERS_JS, ORT_WEB],
   ccModel: [WHISPER, WHISPER_CODE, HUB, ONNX_COMMUNITY, TRANSFORMERS_ENV],

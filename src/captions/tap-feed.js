@@ -13,6 +13,10 @@
 // start, pauses and end are counted on. The sum only holds while no audio
 // goes missing, so frames lost between blocks are fed as silence (and
 // counted), and a block that overlaps what was already fed is trimmed.
+//
+// at(frame, fn) calls fn when the audio fed reaches a context frame, with
+// exactly the audio before that frame fed and none after it: that is how an
+// utterance is cut at a take's start, pauses and end.
 
 import { Resampler, SAMPLE_RATE } from "../speech/audio.js";
 
@@ -24,6 +28,7 @@ export class FeedClock {
   lostFrames = 0;
   #resampler;
   #onAudio;
+  #marks = []; // [{ frame, fn }] still to come, earliest first
 
   constructor(rate, onAudio) {
     this.rate = rate;
@@ -46,10 +51,42 @@ export class FeedClock {
     if (skip < length) this.#feed(mixDown(channels, skip));
   }
 
+  // Feeds mono, stopping at each mark on the way to call it.
   #feed(mono) {
+    let from = 0;
+    while (this.#marks.length) {
+      const at = this.#marks[0].frame - (this.firstFrame + this.fed);
+      if (at > mono.length - from) break;
+      if (at > 0) this.#resample(mono.subarray(from, from + at));
+      from += Math.max(0, at);
+      this.#marks.shift().fn();
+    }
+    if (from < mono.length) this.#resample(from ? mono.subarray(from) : mono);
+  }
+
+  #resample(mono) {
     this.fed += mono.length;
     const out = this.#resampler.process(mono);
     if (out.length) this.#onAudio(out);
+  }
+
+  // Calls fn once the audio fed reaches context frame `frame`: at once if it
+  // already has, or if nothing has been fed yet. Returns a function that
+  // calls it now instead, if it hasn't been called (for a clock that stopped).
+  at(frame, fn) {
+    if (this.firstFrame == null || frame <= this.firstFrame + this.fed) {
+      fn();
+      return () => {};
+    }
+    const mark = { frame, fn };
+    const i = this.#marks.findIndex((m) => m.frame > frame);
+    this.#marks.splice(i < 0 ? this.#marks.length : i, 0, mark);
+    return () => {
+      const at = this.#marks.indexOf(mark);
+      if (at < 0) return;
+      this.#marks.splice(at, 1);
+      fn();
+    };
   }
 
   // The context frame playing at `seconds` of the audio fed, or null before any was.

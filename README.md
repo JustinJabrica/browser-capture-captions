@@ -13,11 +13,13 @@ It joins two earlier studies, both private repositories of the same author:
 - automatic-speech-recognition-and-diarization (from commit `7e293e0`):
   speech recognition in the page, with a local Whisper model.
 
-**Where it stands.** The capture bench runs from this repo, and it captions
-what it hears while a source is open: see [Live captions](#live-captions).
-The captions aren't saved with a take yet. Saved transcripts and subtitle
-files come next (see the [Roadmap](#roadmap)). Most of this page still
-describes the capture bench as it came over.
+**Where it stands.** The capture bench runs from this repo. It captions what
+it hears while a source is open, and each take is saved with a transcript of
+what was said while it recorded, timed on the recording: see
+[Live captions](#live-captions) and
+[Transcripts and subtitles](#transcripts-and-subtitles). Subtitles written
+into the file itself come next (see the [Roadmap](#roadmap)). Most of this
+page still describes the capture bench as it came over.
 
 It's plain modern JavaScript, with no framework, bundler or build step.
 
@@ -233,32 +235,119 @@ English only.
 `captions`, `model`, `device` (WebAssembly or WebGPU), the speech detector
 (the bench's energy rule, WebRTC VAD or Silero VAD) and its level or
 threshold, the pause that ends an utterance (800 ms), the longest utterance
-(20 s), and interim text and how often it's refreshed. They are read when a
-source opens. A change of model or device restarts the engine.
+(20 s), interim text and how often it's refreshed, and word times. They are
+read when a source opens. A change of model, device or word times restarts
+the engine. Three more shape a take's subtitles (the longest line, the most
+lines, the longest time on screen) and are read when subtitles are made.
+
+Under the preview, **Transcript** lists every utterance heard since the
+source opened, with its times.
 
 **The Captions chip** in the header shows the model's state: loading with its
 progress, then the model and its thread count. One thread means the page
 isn't cross-origin isolated, which costs about half the speed.
 
+## Transcripts and subtitles
+
+Each take is saved with a transcript: what was said while it recorded, every
+utterance with its start and end **on the saved file's own timeline**. On the
+take's card:
+
+- the recording plays with the transcript as its subtitles (a `<track>` of
+  WebVTT made from it);
+- **Transcript** lists the utterances; the one being said is marked as the
+  recording plays, and a click on a row plays from there;
+- four downloads: `.vtt` and `.srt` (subtitles), `.txt` (an utterance a
+  line, with its times) and `transcript.json` (the whole record);
+- a **Captions** group of measurements: the model, how many captions and
+  words, how long after each utterance its caption came, the model's working
+  time against the speech's length, and the offset that placed the captions.
+
+Transcripts are kept in IndexedDB beside the takes, and Export and Import
+carry them.
+
+### How a caption gets a time in the file
+
+Everything is counted in AudioContext frames, the clock the tap counts on.
+
+```
+the captions' seconds  ─►  context frames   the feed: first frame + seconds × rate
+context frames         ─►  take time        the tap: from the frame at Record, less the pauses
+take time              ─►  file time        + one offset: where the take starts in the saved file
+```
+
+1. **Captions to frames.** The speech model is fed from the take's own tap,
+   whose blocks carry the context frame they start at. The feed
+   (`src/captions/tap-feed.js`) keeps the frame of the first sample it fed,
+   and feeds silence for any frames the tap lost, so the sum stays exact.
+2. **Frames to take time.** `PcmTap.record()`, `pause()`, `resume()` and
+   `finish()` report the frame each took effect at. Take time is the frames
+   since Record less the paused ranges (`src/captions/timeline.js`), which is
+   the same arithmetic the tap uses to cut `tap.wav`: take time is, by
+   construction, the position in the tap's recording.
+3. **Take time to file time.** The one thing measured rather than counted.
+   The analysis already finds where the tap's sound sits in the file's
+   decoded sound (**Starts (file against tap)**); that, plus the audio
+   track's first timestamp, is the offset. When that match is below 0.9 the
+   offset is estimated: 0 (the recorder and the tap start together), or,
+   for the WebCodecs recorder taking its sound from the tap, the exact
+   figure from the timestamps it wrote.
+
+**At a take's edges.** A caption in progress when the take starts, pauses,
+resumes or stops is cut at exactly that frame: the feed splits the block
+there and ends the utterance, so no caption spans an edge. A take keeps the
+captions whose middle fell while it recorded. One that was cut, or that
+begins where recording began (so its start was said outside the take), is
+marked with scissors: its sentence may be unfinished.
+
+**After Stop** the bench waits up to 20 s for the model to finish the last
+captions, while the take is analysed. If it runs out, the transcript is
+saved without them and says so.
+
+### From utterances to subtitles
+
+An utterance can be 20 s of speech, far more than a screen holds.
+`src/captions/subtitles.js` cuts a transcript into subtitles of at most two
+lines of 42 characters, up for at most 6 s, ending where a sentence does once
+a subtitle has half a line or more. Subtitles never overlap, and one too
+short to read is held until the next begins.
+
+A long utterance is cut between words, so the words need times:
+
+- **word times off** (the default): each utterance's time is shared out
+  among its words by their length. Close enough to cut a caption into
+  subtitles; a subtitle can start a word early or late.
+- **from Whisper**: the model's `_timestamped` export is loaded in its
+  place, and each word is timed from the decoder's cross-attention.
+- **forced alignment**: a second model (wav2vec2) lines the caption's letters
+  up with the sound, as WhisperX does.
+
+The transcript is saved whole; subtitles are cut from it when the card is
+shown and at each download, with the Captions tab's limits as they are then.
+
 ### What the caption tests have shown so far
 
-All headless, on one Windows desktop, with fake devices. Headless browsers
-are throttled on Windows, so the timings are for comparing runs, not for
-judging the model's speed.
+On one Windows desktop, with fake devices, in Edge 157 and Firefox 161.
+(An earlier version of this page and the first caption commit said Edge 156
+and Firefox 160; the browsers had already updated.) All headless unless it
+says otherwise.
 
-- **It works in Edge 156 and Firefox 160** on WebAssembly with four threads.
-  Edge's fake microphone plays `fox.wav` on a loop, and every loop is
-  captioned "The quick brown fox jumps over the lazy dog."; in both, the
-  media-file source playing `two-sentences.wav` is captioned "Speech
-  recognition now works in Firefox."
-- **Caption times follow the audio.** In Edge the same sentence was heard at
-  0.56 s and again at 5.42 s, in a file that repeats every 4.83 s.
-- **Final captions were late in headless Edge**: 2.0 to 3.9 s after each
-  utterance ended, with tiny.en taking about 2.0 s over a 2.7 s utterance
-  while the fake camera's preview ran. Interim text often didn't arrive at
-  all before the final one. Firefox showed interim text 0.5 s after the model
-  was ready. Real conditions haven't been measured.
-- **Loading tiny.en from the server** took 1.0 s in Firefox and 2.3 to 4.8 s
+**Live captions**
+
+- **It works in both** on WebAssembly with four threads. Edge's fake
+  microphone plays `fox.wav` on a loop, and every loop is captioned "The
+  quick brown fox jumps over the lazy dog."; in both, `two-sentences.wav`
+  played as a media file is captioned "Speech recognition now works in
+  Firefox." and "Everything runs locally on this computer."
+- **How late captions come depends on whether the window is visible.** In a
+  visible Edge window (one take of 16 s, camera and microphone, tiny.en):
+  final captions a median 0.80 s after each utterance ended, the model
+  working 0.17 s for each second of speech, 15 interim texts. Headless,
+  takes like it had their captions 3.1 to 4.8 s after each utterance, the
+  model took 0.74 to 1.3 s for each second of speech, and interim text
+  rarely arrived before the final one. Headless browsers are throttled on Windows,
+  so the tests' timings are for comparing runs, not for judging the model.
+- **Loading tiny.en from the server** took 1.0 s in Firefox and 2.3 to 5.3 s
   in Edge.
 - **Loading it from the Hugging Face hub works on a cross-origin isolated
   page** (`Cross-Origin-Embedder-Policy: require-corp`), in both browsers:
@@ -269,12 +358,60 @@ judging the model's speed.
 - **With captions off, no model is loaded**: the engine stays unloaded
   through every capture test.
 
+**Captions on the file's timeline**
+
+- **A recorded file's captions sit on its speech.** `two-sentences.wav`
+  recorded to its end, with the take's own decoded sound as the reference
+  (the energy detector on the 16 kHz copy). Edge: captions at 0.408 to
+  3.368 s and 5.348 to 7.808 s, speech at 0.60 to 3.16 s and 5.54 to 7.60 s.
+  Firefox: 0.613 to 3.413 s and 5.393 to 7.853 s, speech at 0.66 to 3.22 s
+  and 5.58 to 7.66 s. Each caption starts up to 300 ms before its speech and
+  ends about 200 ms after it, which is the lead-in and tail the segmenter
+  keeps. The measured offsets were -41 ms (Edge) and -6 ms (Firefox).
+- **The estimate agrees with the measurement** where the estimate is exact:
+  with the WebCodecs recorder taking its sound from the tap, both gave 1 ms
+  and 7 ms in two Edge takes and 8 ms in Firefox.
+- **A paused take keeps what was said while it recorded.** Edge, the fake
+  microphone, 8.5 s recorded, 3 s paused, 4 s recorded: 3 captions in a
+  12.6 s recording, in order, none from the pause, the whole sentence on its
+  speech and the two cut by the take's edges marked.
+- **A paused take's offset is usually the estimate.** Its waveform match was
+  0.38 and 0.62 in two takes, under the 0.9 that counts as measured: the
+  recorder and the tap pause a few milliseconds apart, which is enough to
+  spoil a sample-by-sample match after the pause. The lag the match found in
+  one of them was -19 ms, against the 0 used.
+- **Whisper tiny.en's word times run late.** Its first word started 425 to
+  445 ms after the speech did, in both browsers and in Node ("Speech" at
+  1.06 s where the sound starts at 0.62 s), and every later word is late by
+  about as much: its times look like where each word ends. base.en's are
+  close: "Speech" at 0.86 s in the same clip (one check, in Node). Subtitles
+  cut on tiny.en's word times start late by a word.
+- **Once, a file take's first caption began at the take's start** rather than
+  0.3 s before its speech: the detector heard the stream's first frames as
+  speech. It didn't happen again in the next four takes, or in the tests.
+
+**Found on the way**
+
+- Waiting for "every caption delivered" never ended when the source kept
+  talking after Stop and the model was slower than the speech, as it is
+  headless: there was always another utterance queued. The wait now covers
+  only what was said before the cut.
+- A finished utterance now goes ahead of a waiting interim, and an interim
+  that is out of date is dropped from the queue. Before, they ran in the
+  order they were queued.
+
 ### Captions' limits, for now
 
-- Captions aren't kept: nothing of them is saved with a take, and closing the
-  source drops them. That is the next stage.
 - A media file played without recording closes when it ends, so its last
-  sentence's caption, which needs the pause after it, is dropped.
+  sentence's caption, which needs the pause after it, is dropped. Recorded,
+  it is kept.
+- A transcript holds what the live captions heard: nothing is transcribed
+  again from the finished file yet, so a take recorded with captions off has
+  no transcript.
+- One offset places a whole take. Each pause can differ by a few
+  milliseconds between the tap and the recorder, which isn't corrected.
+- Subtitles are a separate file, or the card's own track: nothing is written
+  into the recording yet.
 - English only, in practice.
 - Whisper isn't a streaming model. A final caption can't come sooner than the
   pause that ends its utterance plus the model's time over it.
@@ -789,8 +926,8 @@ same as `npm run cert`. Write its server files to `.cert/key.pem` and
 
 ```
 index.html, page/app.js       the bench: sources, settings, transport, live view, takes, Browser view
-page/take-view.js             a take's card: playback, waveforms, measurements, asked vs got
-page/compare.js, page/takes.js  the Takes view, and the takes in IndexedDB (export and import)
+page/take-view.js             a take's card: playback with subtitles, waveforms, transcript, measurements, asked vs got
+page/compare.js, page/takes.js  the Takes view, and the takes and their transcripts in IndexedDB (export and import)
 page/bench.js, app.css, icons.svg  the bench's building blocks: parameter panel, events log, status, alerts
 page/explain.js, page/explain/  the hover bubbles, right-click (or touch-and-hold) menu and article window, and the articles
 guide.html, page/guide.js     the Guide: every article, by section, with search
@@ -809,8 +946,10 @@ src/pattern.js                the test pattern's flash and frame-number cells (n
 src/wav.js                    WAV writing and reading (no DOM)
 src/capabilities.js           the Browser view's report
 src/deps.js                   where the vendored libraries and the models are, from this file's own address
-page/captions.js              live captions: the overlay, the Captions chip, starting and stopping the engine
-src/captions/tap-feed.js      the tap's blocks to 16 kHz mono, with their place on the context's clock (no DOM)
+page/captions.js              live captions: the overlay, the transcript, the Captions chip, and each take's transcript
+src/captions/tap-feed.js      the tap's blocks to 16 kHz mono, with their place on the context's clock, and cuts at a frame (no DOM)
+src/captions/timeline.js      context frames to take time to file time; which captions a take keeps (no DOM)
+src/captions/subtitles.js     a transcript cut into subtitles; WebVTT, SubRip, text and JSON (no DOM)
 src/speech/core.js            the speech engine's settings, the worker's client and job queue, transcript clean-up
 src/speech/engine-worker.js   the worker that hosts the model: loading, WebGPU with its fallback, word times
 src/speech/asr-engine.js, whisper-engine.js, ctc-engine.js  the transcription engines (they run in Node too)
@@ -829,7 +968,7 @@ scripts/check-sources.mjs     checks every link the explanations cite
 scripts/check-blockers.mjs    checks that no ad or tracker blocker's list would block the bench's files
 scripts/install-chrome-for-testing.mjs  Chrome for Testing into Puppeteer's cache, for the end-to-end tests
 test/unit/                    node --test: WAV, pattern, metrics, sound, constraints, types, codecs, probing,
-                              the speech engine's pure parts, the tap feed, what the pages load
+                              the speech engine's pure parts, the tap feed, the timeline, subtitles, what the pages load
 test/engine.test.mjs          the speech model in Node, on the fixtures
 test/browser.test.mjs         end-to-end, in real browsers
 test/fixtures/                fox.wav and two-sentences.wav (from automatic-speech-recognition-and-diarization)
@@ -855,7 +994,8 @@ from a static host.
 
 ```sh
 # Pure code (WAV, the test pattern, metrics, sound, constraints, MIME types, probing,
-# the speech engine's registry, resampler, segmenter and detectors, the tap feed); no browser
+# the speech engine's registry, resampler, segmenter and detectors, the tap feed,
+# the take's timeline, subtitles); no browser
 npm run test:unit
 
 # The speech model itself, in Node: needs a model in models/
@@ -863,7 +1003,8 @@ npm run download-model whisper-tiny.en
 npm run test:engine
 
 # End to end in a real browser: start the server, then in another terminal.
-# The caption tests need whisper-tiny.en in models/, and are skipped without it.
+# The caption tests need whisper-tiny.en in models/, and are skipped without it;
+# the word-times test needs whisper-tiny.en-timestamped as well.
 npm start
 npm test               # Firefox
 npm run test:edge      # Microsoft Edge
@@ -894,6 +1035,10 @@ in for the camera and microphone, and prompts are granted without asking.
 - The capture tests run with captions off, as the bench they came from did.
   The caption tests turn them on: Chromium captions its fake microphone, and
   every browser captions `two-sentences.wav` played as a media file.
+- The transcript tests check captions' times against the recording itself:
+  where the take's own decoded sound has speech. They cover a recorded file
+  in every browser, both recorders, a paused take in Chromium, the card's
+  subtitles and downloads, and word times.
 
 The tests look for each browser in its usual install location. These
 environment variables change that and other settings:
@@ -915,7 +1060,7 @@ environment variables change that and other settings:
 - **Captions**, in stages:
   1. Done: live captions over the preview, from a Whisper model in the
      page, fed by the same audio tap the takes use.
-  2. A timed transcript saved with each take, on the saved file's own
+  2. Done: a timed transcript saved with each take, on the saved file's own
      timeline, and `.vtt`, `.srt`, `.txt` and `.json` downloads.
   3. The subtitles written into the saved file as a track.
   4. A second, slower transcription of the finished take, and captions

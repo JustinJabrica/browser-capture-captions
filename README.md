@@ -15,13 +15,13 @@ It joins two earlier studies, both private repositories of the same author:
 
 **Where it stands.** The capture bench runs from this repo. It captions what
 it hears while a source is open, and each take is saved with a transcript of
-what was said while it recorded, timed on the recording. The subtitles can be
-downloaded as files, or written into a copy of the recording as a track: see
-[Live captions](#live-captions) and
-[Transcripts and subtitles](#transcripts-and-subtitles). A second, slower
-transcription of the finished take and captions drawn into the picture come
-next (see the [Roadmap](#roadmap)). Most of this page still describes the
-capture bench as it came over.
+what was said while it recorded, timed on the recording. A finished take can
+be transcribed again, without a clock to keep up with. The subtitles can be
+downloaded as files, written into a copy of the recording as a track, or
+drawn into its picture: see [Live captions](#live-captions) and
+[Transcripts and subtitles](#transcripts-and-subtitles). Publishing the bench
+on GitHub Pages comes next (see the [Roadmap](#roadmap)). Most of this page
+still describes the capture bench as it came over.
 
 It's plain modern JavaScript, with no framework, bundler or build step.
 
@@ -259,10 +259,12 @@ take's card:
   WebVTT made from it);
 - **Transcript** lists the utterances; the one being said is marked as the
   recording plays, and a click on a row plays from there;
-- five downloads: **with subtitles** (the recording with the subtitles
-  inside it as a track), `.vtt` and `.srt` (subtitles), `.txt` (an
-  utterance a line, with its times) and `transcript.json` (the whole
-  record);
+- six downloads: **with subtitles** (the recording with the subtitles
+  inside it as a track), **captions burned in** (drawn into the picture),
+  `.vtt` and `.srt` (subtitles), `.txt` (an utterance a line, with its
+  times) and `transcript.json` (the whole record);
+- **Second pass**, which transcribes the finished recording again, and a
+  choice between that transcript and the live one;
 - a **Captions** group of measurements: the model, how many captions and
   words, how long after each utterance its caption came, the model's working
   time against the speech's length, and the offset that placed the captions.
@@ -328,6 +330,60 @@ A long utterance is cut between words, so the words need times:
 
 The transcript is saved whole; subtitles are cut from it when the card is
 shown and at each download, with the Captions tab's limits as they are then.
+
+### A second pass over the finished take
+
+Live captions work against the clock. The model shares the processor with
+the recorder, a caption is cut wherever the take's edges fall, and a model
+too slow to keep up is no use. **Second pass**, on a take's card, transcribes
+the finished recording with none of that.
+
+1. A speech detector goes over the whole of the take's 16 kHz copy and marks
+   where the speech is.
+2. Stretches closer together than the pause that ends an utterance are
+   joined, up to 25 s (Whisper hears 30 s at a time).
+3. Each is given to the model with 300 ms of room either side, and reported
+   with 100 ms of it.
+
+It is `src/speech/file-pass.js`: the speech bench's whole-file pipeline with
+the detector's stretches of speech where that had a diarizer's turns.
+
+- It runs in **a worker of its own, with its own model** (`second pass
+  model`), so it can use a bigger one than the live captions, neither waits
+  behind them nor holds them up, and can time words when they don't.
+- The result is a second transcript beside the live one. **Live** and
+  **Second pass** on the card choose which the card shows, plays as
+  subtitles and makes its downloads from; the choice is kept with the take.
+- The card's **Second pass** measurements include how many words the live
+  captions have differently from it (a word error rate, with the second pass
+  as the reference). It measures agreement, not truth.
+- A take recorded with captions off, or made by **Analyse whole file**, has
+  no live transcript; **Transcribe the recording** makes its only one.
+- `second pass after each take` does it without being asked.
+
+### Captions burned into the picture
+
+**captions burned in** makes a copy of the recording with the subtitles drawn
+onto its frames: white letters on a dark box near the bottom
+(`src/captions/caption-draw.js`). They show wherever the video does and can't
+be turned off; the picture is encoded a second time. It is made after the
+take, from the transcript chosen on the card, so the captions sit on their
+words instead of arriving late as live captions do.
+
+There are two ways (`src/captions/burn-in.js`), and `burn captions in with`
+picks:
+
+- **WebCodecs**, through Mediabunny. Each frame is decoded, drawn on with the
+  subtitle on screen at that frame's own timestamp, and encoded again in the
+  recording's own codec; the sound's packets are copied. It runs as fast as
+  the machine decodes and encodes, and every frame keeps its time.
+- **A played `<video>` and a canvas.** The recording is played in a hidden
+  element, each frame it shows is drawn to a canvas with its caption, and the
+  canvas and the element's sound are recorded with MediaRecorder. It takes as
+  long as the recording lasts, encodes the sound again, and keeps the frames
+  it manages to draw. A browser with no `VideoEncoder` falls back to it.
+
+The button shows how far it has got, and a second click cancels.
 
 ### Subtitles inside the recording
 
@@ -412,6 +468,11 @@ says otherwise.
   microphone, 8.5 s recorded, 3 s paused, 4 s recorded: 3 captions in a
   12.6 s recording, in order, none from the pause, the whole sentence on its
   speech and the two cut by the take's edges marked.
+- **A caption after a pause can begin mid-sentence without a word of
+  warning from the sound**: resumed in the gap between two words, a take's
+  next caption read "Box jumps over the lazy dog." and wasn't marked. A
+  caption is now marked as carrying on when it starts while the one the cut
+  ended would still have been open.
 - **A paused take's offset is usually the estimate.** Its waveform match was
   0.38 and 0.62 in two takes, under the 0.9 that counts as measured: the
   recorder and the tap pause a few milliseconds apart, which is enough to
@@ -447,6 +508,46 @@ says otherwise.
   a WebM that declared none declares 7.003 s, and of an MP4 that declared
   0.252 s, 7.047 s.
 
+**The second pass**
+
+- **It puts captions closer to the speech.** The same recorded file in Edge:
+  the second pass at 0.52 to 3.30 s and 5.46 to 7.74 s, the live captions at
+  0.59 to 3.39 s and 5.39 to 7.83 s, the speech at 0.62 to 3.20 s and 5.56
+  to 7.64 s. Firefox gave the same to within 30 ms.
+- **On these two clean sentences the live captions and the second pass
+  agree**: 0 of 12 words differ, with tiny.en for both. That says nothing
+  about harder speech.
+- **It took 6 to 8 s for a 9 s recording headless**, about 4 s of that
+  loading the model into its own worker the first time; the model worked
+  0.9 s for each second of speech.
+
+**Captions burned in**
+
+- **WebCodecs keeps every frame**: 175 in, 175 out in Edge, with VP8 kept,
+  the same first timestamp, and the sound's packets copied one for one. A
+  6 s take took 0.7 s in Edge and 2 to 5 s in Firefox (whose encoder is
+  software).
+- **The caption is there while its cue is, and only then.** With the box
+  made magenta for the test, it fills two thirds of the caption's place
+  during the cue and none of it between cues; the rest of the picture
+  differs from the recording by 0.2 to 0.3 of 255.
+- **Mediabunny's own conversion loses a frame a second from a MediaRecorder
+  WebM.** That file stores no duration for the last frame of each
+  one-second cluster, and a conversion that re-encodes skips a frame whose
+  duration is 0: 114 of 121 frames came through, the missing ones at 1.000,
+  2.003, 3.049 s and so on. Decoding with `VideoSampleSink` returns all of
+  them, so the burn-in runs its own decode, draw and encode loop for the
+  picture and leaves only the sound to a conversion. A conversion that
+  copies packets, as the subtitle track's does, keeps every one.
+- **Left to choose, Mediabunny wrote VP9 for a VP8 take**; the burn-in asks
+  for the take's own codec where the browser encodes it.
+- **Played through a canvas, some frames are missed**: 144 and 173 of 175 in
+  two Edge runs, 98 of 99 and 153 of 168 in Firefox. It took as long as the
+  take, as it must.
+- **MediaRecorder's output can't be seeked in Firefox** until it is
+  rewritten: asked for the frame at 2 s of the played-through copy, Firefox
+  showed the first frame. The copy is now remuxed, as takes are.
+
 **Found on the way**
 
 - Waiting for "every caption delivered" never ended when the source kept
@@ -468,9 +569,13 @@ says otherwise.
 - A media file played without recording closes when it ends, so its last
   sentence's caption, which needs the pause after it, is dropped. Recorded,
   it is kept.
-- A transcript holds what the live captions heard: nothing is transcribed
-  again from the finished file yet, so a take recorded with captions off has
-  no transcript.
+- The second pass finds speech with the same detectors the live captions
+  use; the default, the energy rule, can take steady noise for speech, and
+  the model is then asked to transcribe it. What it writes for noise is
+  dropped when it is nothing, a low-confidence stock phrase, or a loop.
+- Burned-in captions have one look, and it isn't a setting yet.
+- A burned-in copy is built in memory, as the others are: the recording and
+  the copy both, for as long as it takes.
 - One offset places a whole take. Each pause can differ by a few
   milliseconds between the tap and the recorder, which isn't corrected.
 - Subtitles inside the recording are WebVTT only, and which players show
@@ -1015,6 +1120,10 @@ src/captions/tap-feed.js      the tap's blocks to 16 kHz mono, with their place 
 src/captions/timeline.js      context frames to take time to file time; which captions a take keeps (no DOM)
 src/captions/subtitles.js     a transcript cut into subtitles; WebVTT, SubRip, text and JSON (no DOM)
 src/captions/embed.js         the recording copied with its subtitles as a track (Mediabunny; no DOM)
+src/captions/burn-in.js       captions drawn into the picture: with WebCodecs, or by playing it through a canvas
+src/captions/caption-draw.js  where a caption goes on a picture, and drawing it (the layout has no DOM)
+src/captions/wer.js           how many words two transcripts differ by (no DOM)
+src/speech/file-pass.js       the second pass: the speech in a whole recording, part by part (no DOM)
 src/speech/core.js            the speech engine's settings, the worker's client and job queue, transcript clean-up
 src/speech/engine-worker.js   the worker that hosts the model: loading, WebGPU with its fallback, word times
 src/speech/asr-engine.js, whisper-engine.js, ctc-engine.js  the transcription engines (they run in Node too)
@@ -1034,7 +1143,8 @@ scripts/check-blockers.mjs    checks that no ad or tracker blocker's list would 
 scripts/install-chrome-for-testing.mjs  Chrome for Testing into Puppeteer's cache, for the end-to-end tests
 test/unit/                    node --test: WAV, pattern, metrics, sound, constraints, types, codecs, probing,
                               the speech engine's pure parts, the tap feed, the timeline, subtitles,
-                              subtitles written into a file, what the pages load
+                              subtitles written into a file, the second pass, a caption's layout,
+                              what the pages load
 test/engine.test.mjs          the speech model in Node, on the fixtures
 test/lib/matroska.mjs         reads a WebM or Matroska file's subtitle cues from its bytes, for the tests
 test/browser.test.mjs         end-to-end, in real browsers
@@ -1062,7 +1172,8 @@ from a static host.
 ```sh
 # Pure code (WAV, the test pattern, metrics, sound, constraints, MIME types, probing,
 # the speech engine's registry, resampler, segmenter and detectors, the tap feed,
-# the take's timeline, subtitles, subtitles written into a Matroska and an MP4 file); no browser
+# the take's timeline, subtitles, subtitles written into a Matroska and an MP4 file,
+# the second pass's planning, a burned-in caption's layout); no browser
 npm run test:unit
 
 # The speech model itself, in Node: needs a model in models/
@@ -1106,6 +1217,11 @@ in for the camera and microphone, and prompts are granted without asking.
   where the take's own decoded sound has speech. They cover a recorded file
   in every browser, both recorders, a paused take in Chromium, the card's
   subtitles and downloads, and word times.
+- The second pass is run from the card's button on a take with live captions
+  and on one without, and by its setting. Burned-in captions are checked
+  frame against frame with the recording: every frame kept, the caption's
+  box in its place during the cue and gone between cues, the rest of the
+  picture as it was.
 - The tests of subtitles inside the recording read the copy's subtitle track
   back from its bytes and compare every cue, for WebM (every browser) and
   Matroska; an MP4 copy is checked for its `wvtt` track and the cues' text.
@@ -1133,8 +1249,8 @@ environment variables change that and other settings:
   2. Done: a timed transcript saved with each take, on the saved file's own
      timeline, and `.vtt`, `.srt`, `.txt` and `.json` downloads.
   3. Done: the subtitles written into a copy of the saved file as a track.
-  4. A second, slower transcription of the finished take, and captions
-     drawn into the picture.
+  4. Done: a second, slower transcription of the finished take, and
+     captions drawn into the picture.
   5. The bench published on GitHub Pages.
   6. Later: speaker labels, other languages, streaming models.
 - **The WebCodecs recorder, further** (it exists now: see

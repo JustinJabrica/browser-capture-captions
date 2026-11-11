@@ -64,7 +64,20 @@ const MATROSKA_CODECS = { title: "Matroska Codec Mappings (S_TEXT/WEBVTT)", by: 
 const MEDIABUNNY_SUBTITLES = { title: "Media sources: subtitle sources", by: "Mediabunny", where: "mediabunny.dev", url: "https://mediabunny.dev/guide/media-sources" };
 const MEDIABUNNY_CONVERSION = { title: "Converting media files", by: "Mediabunny", where: "mediabunny.dev", url: "https://mediabunny.dev/guide/converting-media-files" };
 
+const WER = { title: "Word error rate (Wikipedia)", by: "Wikipedia contributors", where: "Wikipedia", url: "https://en.wikipedia.org/wiki/Word_error_rate" };
+
+const MEDIABUNNY_SINKS = { title: "Media sinks", by: "Mediabunny", where: "mediabunny.dev", url: "https://mediabunny.dev/guide/media-sinks" };
+const WEBCODECS_SPEC = { title: "WebCodecs", by: "W3C", where: "W3C Editor's Draft", url: "https://w3c.github.io/webcodecs/" };
+const CANVAS_CAPTURE = { title: "HTMLCanvasElement: captureStream() method", by: "MDN Web Docs (Mozilla)", where: "MDN", url: "https://developer.mozilla.org/en-US/docs/Web/API/HTMLCanvasElement/captureStream" };
+const RVFC = { title: "HTMLVideoElement: requestVideoFrameCallback() method", by: "MDN Web Docs (Mozilla)", where: "MDN", url: "https://developer.mozilla.org/en-US/docs/Web/API/HTMLVideoElement/requestVideoFrameCallback" };
+
 export const CAPTIONS_SOURCES = {
+  "download-burned": [MEDIABUNNY_SINKS, MEDIABUNNY_SUBTITLES, WEBCODECS_SPEC, BBC_SUBTITLES],
+  ccBurnMethod: [WEBCODECS_SPEC, CANVAS_CAPTURE, RVFC],
+  "second-pass": [WHISPER, WHISPERX, VAD],
+  ccFinalModel: [WHISPER, HUB],
+  ccFinalWords: [WHISPER_TIMING, WHISPERX],
+  "m-fp-wer": [WER],
   "download-subtitled": [MEDIABUNNY_SUBTITLES, MEDIABUNNY_CONVERSION, MATROSKA_CODECS, WEBVTT],
   "take-transcript": [WEBVTT, TRACK],
   "captions-on-the-timeline": [CURRENT_FRAME, WEB_AUDIO],

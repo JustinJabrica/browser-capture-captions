@@ -72,8 +72,8 @@ function captureError(code, err) {
 // adapts while nobody is speaking; a detector (vad.js) decides instead, and
 // the energy rule only drives the sound handler. Handlers get the sample
 // offset where each utterance starts, counted from the first push (segment
-// also gets { cut, continued }: whether cut() ended it, and whether it began
-// with speech that was already going when a cut came), and optionally
+// also gets { cut, continued }: whether cut() ended it mid-speech, and
+// whether it carries on an utterance that a cut ended), and optionally
 // vad(score, speech) for every frame. A detector that answers
 // asynchronously (Silero) delays the handlers; flush() then returns a Promise
 // that resolves once the last frames are decided.
@@ -97,6 +97,7 @@ export class Segmenter {
     this.frames = null;
     this.run = 0;
     this.sinceCut = Infinity; // frames since the last cut()
+    this.joinFrames = 0; // and how many of them an utterance may start in and count as continuing the one cut
     this.continued = false; // the utterance in progress began at a cut, mid-speech
     this.segmentId = 0;
     this.framesSeen = 0;
@@ -134,12 +135,17 @@ export class Segmenter {
   // the pause that would have ended it. What was heard before the cut is forgotten
   // too (the lead-in kept for the next utterance, and a run of speech not
   // yet long enough to start one), so nothing from before it can end up in
-  // an utterance after it; one that starts within two frames of the cut is
-  // marked continued: the speech was already going. Unlike flush() it leaves
-  // the detector's own state alone. Returns a Promise when the detector is
-  // still deciding frames; the cut is then made once it has.
+  // an utterance after it. An utterance that then starts while the one the
+  // cut ended would still have been open (the pause that ends an utterance
+  // hadn't run out) is marked continued: without the cut the two would have
+  // been one. Unlike flush() it leaves the detector's own state alone.
+  // Returns a Promise when the detector is still deciding frames; the cut is
+  // then made once it has.
   cut() {
     const here = () => {
+      // How many more frames the utterance in progress had before quiet would have ended it;
+      // two for a run of speech that hadn't become an utterance yet.
+      this.joinFrames = this.frames ? this.endFrames - this.silent : this.run ? 2 : 0;
       // Quiet for longer than the tail an utterance keeps: the speech had stopped by itself.
       if (this.frames) this.#endSegment(this.silent, this.silent <= this.trailFrames);
       this.preRoll = [];
@@ -178,8 +184,8 @@ export class Segmenter {
         this.startSample = (this.framesSeen - this.frames.length) * this.frameSize;
         this.voiced = this.run;
         this.silent = 0;
-        // The first frame of this run of speech was the first or second after a cut.
-        this.continued = this.sinceCut - this.run < 2;
+        // This run of speech began while the utterance a cut ended would still have been open.
+        this.continued = this.sinceCut - this.run < this.joinFrames;
         this.segmentId++;
         this.handlers.speechStart(this.segmentId, this.startSample);
       }

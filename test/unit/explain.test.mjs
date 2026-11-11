@@ -68,7 +68,7 @@ test("every control, chip and view the bench explains has a topic", () => {
 
 test("every measurement, Takes column and download has a topic", () => {
   const card = read("page/take-view.js");
-  const metricTopics = all(/, "((?:m-|event-)[\w-]+|mimeType|timeslice|webrtc|ccWords)"\]/g, card);
+  const metricTopics = all(/, "((?:m-|event-)[\w-]+|mimeType|timeslice|webrtc|ccWords|ccFinalWords)"\]/g, card);
   assert.ok(all(/textButton\("(\w+)"/g, card).length >= 4, "the transcript's downloads");
   assert.ok(metricTopics.length > 25, `${metricTopics.length} measurements found`);
   assert.deepEqual(missing(metricTopics), [], "measurements");

@@ -216,6 +216,22 @@ test("Segmenter.cut ends the utterance in progress there, and listening carries 
   assert.ok(Math.abs(waiting[0][1] - first[1]) < 0.05, "and the utterance ends where it would have");
 });
 
+test("Segmenter.cut in a short gap between words: what follows carries the utterance on", async () => {
+  // A sentence, 300 ms of quiet (less than the pause that ends an utterance), then the sentence again:
+  // one utterance, uncut. A cut in the middle of the quiet makes it two, and the second says it continues.
+  const speech = (await fixture("fox.wav")).slice(8000, 51200); // the sentence itself, without the file's lead-in
+  const audio = new Float32Array(speech.length * 2 + 4800 + 16000);
+  audio.set(speech);
+  audio.set(speech, speech.length + 4800);
+  const whole = await utterances(audio, { step: 320 });
+  assert.equal(whole.length, 1, JSON.stringify(whole));
+  const gap = speech.length / SAMPLE_RATE + 0.15;
+  const parts = await utterances(audio, { cutAt: [gap], step: 320 });
+  assert.equal(parts.length, 2, JSON.stringify(parts));
+  assert.equal(parts[1].continued, true, "the second part began while the first would still have been open");
+  assert.ok(parts[1][0] >= gap - 0.02, `and holds nothing from before the cut: it starts at ${parts[1][0]} s, the cut was at ${gap.toFixed(2)} s`);
+});
+
 test("Segmenter.cut forgets what came before it: a burst just before the cut can't start or stretch an utterance", async () => {
   // 160 ms of loud sound with a cut 100 ms into it, then quiet, then speech half a second later: what
   // Firefox's first AudioContext block, smeared by the resampler, did to a media file's first caption.

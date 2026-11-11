@@ -64,6 +64,8 @@ const RULES = [
     "#close": "close",
     "#whole-file": "whole-file",
     ".take [data-delete]": "delete-take",
+    '.take [data-action="second-pass"]': "second-pass",
+    ".take .transcript-pick label": "transcript-choice",
     "label:has(#takes-import)": "takes-import",
     "#takes-export": "takes-export",
     "#takes-clear": "takes-clear",

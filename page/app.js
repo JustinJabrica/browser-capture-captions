@@ -11,6 +11,7 @@
 
 import { extractTrack } from "../src/container.js";
 import { analyseTake } from "../src/take-report.js";
+import { burnIn, burnInRealtime, canBurnIn } from "../src/captions/burn-in.js";
 import { embedSubtitles } from "../src/captions/embed.js";
 import { asJson, asSrt, asText, asVtt, toCues } from "../src/captions/subtitles.js";
 import { PcmTap, audioGraph, warmOnGestures } from "../src/audio.js";
@@ -30,7 +31,7 @@ import { createCaptions } from "./captions.js";
 import { createCompare } from "./compare.js";
 import { setupExplainers } from "./explain.js";
 import { cardHTML, fillCard, tracksHTML } from "./take-view.js";
-import { clearTakes, deleteTake, exportTakes, importTakes, listTakes, saveTake, storageUse, takeMedia, takeTranscripts, transcriptSummary } from "./takes.js";
+import { chooseTranscript, clearTakes, deleteTake, exportTakes, importTakes, listTakes, saveTake, saveTranscript, storageUse, takeMedia, takeTranscripts, transcriptSummary } from "./takes.js";
 import {
   $,
   bytes,
@@ -301,9 +302,42 @@ const CAPTION_PARAMS = [
     ],
     desc: "Time every word of a final caption, so subtitles can break exactly between words. Either way loads more than the model alone, and adds to each caption's delay.",
   },
+  { key: "ccFinalAuto", label: "second pass after each take", type: "switch", def: false, desc: "Transcribe every take again once it's saved, from its finished recording. Otherwise a take's card has a button for it." },
+  {
+    key: "ccFinalModel",
+    label: "second pass model",
+    type: "select",
+    def: "same",
+    options: [["same", "the same as the live captions"], ...ofKind("asr").map((m) => [m.id, `${m.label} · ${m.loadMB?.wasm ?? m.loadMB?.webgpu} MB`])],
+    desc: "The model for the second pass. It has no clock to keep up with, so it can be a bigger one than the live captions use. It runs in a worker of its own.",
+  },
+  {
+    key: "ccFinalWords",
+    label: "second pass word times",
+    type: "select",
+    def: "off",
+    options: [
+      ["off", "off (subtitles are timed by estimate)"],
+      ["whisper", "from Whisper (its timestamped export)"],
+      ["align", "by forced alignment (wav2vec2, 95 MB more)"],
+    ],
+    desc: "Whether the second pass times every word, whatever the live captions do.",
+  },
   { key: "ccCueChars", label: "subtitle line", type: "number", def: 42, unit: "characters", min: 16, max: 80, step: 1, desc: "The longest line of a subtitle. Read when a take's subtitles are made: for playback and for each download." },
   { key: "ccCueLines", label: "subtitle lines", type: "number", def: 2, min: 1, max: 4, step: 1, desc: "The most lines a subtitle may have." },
   { key: "ccCueSeconds", label: "subtitle on screen", type: "number", def: 6, unit: "s", min: 1, max: 20, step: 0.5, desc: "The longest a subtitle stays up before the next takes over." },
+  {
+    key: "ccBurnMethod",
+    label: "burn captions in with",
+    type: "select",
+    def: "auto",
+    options: [
+      ["auto", "WebCodecs where there is one"],
+      ["realtime", "a played <video> and a canvas, always"],
+    ],
+    tag: canBurnIn() ? undefined : "not supported here",
+    desc: "How captions are drawn into a copy of the recording. WebCodecs decodes, draws and encodes every frame as fast as the machine can; the other way plays the recording through, which a browser with no VideoEncoder falls back to.",
+  },
 ];
 
 const params = createParams({
@@ -788,7 +822,8 @@ async function finishTake(reason = null) {
         );
       }
     }
-    await keep(report, media, { live });
+    const saved = await keep(report, media, { live });
+    if (take.settings.ccFinalAuto && media.pcm16k) runSecondPass($("latest"), saved.id);
   } catch (err) {
     log.add("error", "analyse", `${err.name ?? "Error"}: ${err.message ?? err}`);
     showError(alerts, err);
@@ -1005,11 +1040,12 @@ function cardAt(el) {
   return host ? cards.get(host) : null;
 }
 document.addEventListener("click", async (e) => {
-  const button = e.target.closest(".take [data-download], .take [data-delete]");
+  const button = e.target.closest(".take [data-download], .take [data-delete], .take [data-action]");
   if (!button) return;
   const entry = cardAt(button);
   if (!entry) return;
   const { take, media, transcripts } = entry;
+  if (button.dataset.action === "second-pass") return runSecondPass(button.closest(".take").parentElement, take.id);
   if (button.dataset.delete !== undefined) {
     await deleteTake(take.id);
     log.add("result", "deleted", take.name);
@@ -1020,12 +1056,13 @@ document.addEventListener("click", async (e) => {
   if (kind === "audio" || kind === "video") return downloadSolo(button, entry, kind);
   const ext = take.files?.ext ?? "bin";
   if (kind === "report") return download(`${take.name}.json`, JSON.stringify(take, null, 1), "application/json");
-  if (["vtt", "srt", "txt", "transcript", "subtitled"].includes(kind)) {
+  if (["vtt", "srt", "txt", "transcript", "subtitled", "burned"].includes(kind)) {
     const transcript = chosenTranscript(take, transcripts);
     if (!transcript) return;
     // Subtitles are cut from the transcript now, with the Captions tab's limits as they are.
     const cues = () => toCues(transcript.segments, { ...cueOptions(), duration: take.analysis?.file?.probe?.duration ?? Infinity });
     if (kind === "subtitled") return downloadSubtitled(button, entry, asVtt(cues()));
+    if (kind === "burned") return downloadBurned(button, entry, cues());
     if (kind === "vtt") return download(`${take.name}.vtt`, asVtt(cues()), "text/vtt");
     if (kind === "srt") return download(`${take.name}.srt`, asSrt(cues()), "application/x-subrip");
     if (kind === "txt") return download(`${take.name}.txt`, asText(transcript.segments), "text/plain");
@@ -1034,6 +1071,63 @@ document.addEventListener("click", async (e) => {
   const names = { file: `${take.name}.${ext}`, seekable: `${take.name}-seekable.${ext}`, tap: `${take.name}-tap.wav`, pcm16k: `${take.name}-16k.wav` };
   if (media[kind]) download(names[kind], media[kind]);
 });
+
+// Which transcript a card shows and makes its subtitles from: the live captions' or the second pass's.
+document.addEventListener("change", async (e) => {
+  const input = e.target.closest(".take .transcript-pick input");
+  const entry = input && cardAt(input);
+  if (!entry) return;
+  const host = input.closest(".take").parentElement;
+  const updated = (await chooseTranscript(entry.take.id, input.value).catch(() => null)) ?? { ...entry.take, transcripts: { ...entry.take.transcripts, chosen: input.value } };
+  showCard(host, updated, entry.media, entry.transcripts);
+  refreshTakes();
+});
+
+// Transcribes a finished take again, from its 16 kHz copy, and shows the
+// result on its card. Passes run one at a time. host: the card's host
+// element; id: the take's, to be sure the card still shows it when the pass ends.
+let passing = Promise.resolve();
+function runSecondPass(host, id) {
+  const run = async () => {
+    const entry = cards.get(host);
+    if (!entry || entry.take.id !== id || !entry.media.pcm16k) return;
+    const { take, media, transcripts } = entry;
+    const button = host.querySelector('[data-action="second-pass"]');
+    const say = (text) => {
+      const label = cards.get(host)?.take.id === id ? host.querySelector('[data-action="second-pass"] .label') : null;
+      if (label) label.textContent = text;
+    };
+    if (button) button.disabled = true;
+    const settings = params.values();
+    log.add("call", "second pass", `${take.name} · ${settings.ccFinalModel === "same" ? "the live captions' model" : settings.ccFinalModel}${settings.ccFinalWords !== "off" ? ` · word times: ${settings.ccFinalWords}` : ""}`);
+    try {
+      const final = await captions.secondPass({
+        take,
+        pcm16k: media.pcm16k,
+        settings,
+        live: transcripts.live ?? null,
+        onProgress: ({ phase, done, total }) => say(phase === "loading" ? "Loading the model…" : phase === "speech" ? "Finding the speech…" : `Transcribing ${done} of ${total}…`),
+      });
+      const s = final.stats;
+      const w = s.againstLive;
+      log.add("result", "second pass", `${take.name}: ${s.segments} caption${s.segments === 1 ? "" : "s"}, ${s.words} words in ${s.tookS.toFixed(1)} s${s.rtf != null ? ` · model ${s.rtf.toFixed(2)}× the speech` : ""}${w?.words ? ` · the live captions differ in ${w.errors} of ${w.words} words` : ""}`);
+      const updated = (await saveTranscript(take.id, "final", final).catch(() => null)) ?? { ...take, transcripts: { live: null, ...take.transcripts, final: transcriptSummary(final), chosen: "final" } };
+      // The card may have been replaced while the pass ran; the take keeps its transcript either way.
+      if (cards.get(host)?.take.id === id) showCard(host, updated, media, { ...transcripts, final });
+      refreshTakes();
+    } catch (err) {
+      log.add("error", "second pass", err?.message ?? String(err));
+      showAlert(alerts, { title: "The recording couldn't be transcribed again", detail: String(err?.message ?? err) });
+      const again = cards.get(host)?.take.id === id ? host.querySelector('[data-action="second-pass"]') : null;
+      if (again) {
+        again.disabled = false;
+        say(transcripts.final ? "Transcribe again" : transcripts.live ? "Second pass" : "Transcribe the recording");
+      }
+    }
+  };
+  passing = passing.then(run, run);
+  return passing;
+}
 
 // The recording's sound or picture on its own, copied out when first asked
 // for and kept with the card.
@@ -1070,6 +1164,40 @@ async function downloadSubtitled(button, entry, vtt) {
     showAlert(alerts, { title: "The subtitles couldn't be written into the recording", hint: "The .vtt and .srt downloads hold the same subtitles as files of their own.", detail: String(err?.message ?? err) });
   } finally {
     button.disabled = false;
+  }
+}
+
+// The recording with its captions drawn into the picture: a copy made when
+// asked for. The button shows how far it has got, and a second click cancels.
+async function downloadBurned(button, entry, cues) {
+  if (entry.burning) return entry.burning.abort();
+  if (!entry.media.file) return;
+  const label = button.querySelector(".label");
+  const name = label.textContent;
+  const realtime = params.get("ccBurnMethod") === "realtime" || !canBurnIn();
+  entry.burning = new AbortController();
+  const started = performance.now();
+  log.add("call", "burn in", `${entry.take.name}: ${cues.length} subtitle${cues.length === 1 ? "" : "s"} · ${realtime ? "playing it through a canvas (real time)" : "WebCodecs"}`);
+  try {
+    const options = { signal: entry.burning.signal, onProgress: (share) => (label.textContent = `Cancel (${Math.round(share * 100)}%)`) };
+    label.textContent = "Cancel (0%)";
+    const made = realtime ? await burnInRealtime(entry.media.seekable ?? entry.media.file, cues, options) : await burnIn(entry.media.file, cues, options);
+    const took = (performance.now() - started) / 1000;
+    log.add(
+      "result",
+      "burn in",
+      `${entry.take.name}: captions drawn on ${made.captioned} of ${made.frames} frames, ${made.width}×${made.height} · ${made.method === "webcodecs" ? `${made.videoCodec} in .${made.ext}, the sound copied` : `${made.mimeType}, played and recorded again`} · ${bytes(made.blob.size)} · ${took.toFixed(1)} s`,
+    );
+    download(`${entry.take.name}-captioned.${made.ext}`, made.blob);
+  } catch (err) {
+    if (err?.name === "AbortError") log.add("life", "burn in", "cancelled");
+    else {
+      log.add("error", "burn in", err?.message ?? String(err));
+      showAlert(alerts, { title: "The captions couldn't be drawn into the recording", hint: "The <b>with subtitles</b>, .vtt and .srt downloads carry the same subtitles without re-encoding the picture.", detail: String(err?.message ?? err) });
+    }
+  } finally {
+    entry.burning = null;
+    label.textContent = name;
   }
 }
 

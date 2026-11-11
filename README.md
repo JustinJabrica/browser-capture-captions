@@ -15,11 +15,13 @@ It joins two earlier studies, both private repositories of the same author:
 
 **Where it stands.** The capture bench runs from this repo. It captions what
 it hears while a source is open, and each take is saved with a transcript of
-what was said while it recorded, timed on the recording: see
+what was said while it recorded, timed on the recording. The subtitles can be
+downloaded as files, or written into a copy of the recording as a track: see
 [Live captions](#live-captions) and
-[Transcripts and subtitles](#transcripts-and-subtitles). Subtitles written
-into the file itself come next (see the [Roadmap](#roadmap)). Most of this
-page still describes the capture bench as it came over.
+[Transcripts and subtitles](#transcripts-and-subtitles). A second, slower
+transcription of the finished take and captions drawn into the picture come
+next (see the [Roadmap](#roadmap)). Most of this page still describes the
+capture bench as it came over.
 
 It's plain modern JavaScript, with no framework, bundler or build step.
 
@@ -257,8 +259,10 @@ take's card:
   WebVTT made from it);
 - **Transcript** lists the utterances; the one being said is marked as the
   recording plays, and a click on a row plays from there;
-- four downloads: `.vtt` and `.srt` (subtitles), `.txt` (an utterance a
-  line, with its times) and `transcript.json` (the whole record);
+- five downloads: **with subtitles** (the recording with the subtitles
+  inside it as a track), `.vtt` and `.srt` (subtitles), `.txt` (an
+  utterance a line, with its times) and `transcript.json` (the whole
+  record);
 - a **Captions** group of measurements: the model, how many captions and
   words, how long after each utterance its caption came, the model's working
   time against the speech's length, and the offset that placed the captions.
@@ -325,6 +329,39 @@ A long utterance is cut between words, so the words need times:
 The transcript is saved whole; subtitles are cut from it when the card is
 shown and at each download, with the Captions tab's limits as they are then.
 
+### Subtitles inside the recording
+
+**with subtitles** makes a copy of the recording that carries its subtitles
+as a track of the file, which a player can show or hide. Nothing is
+re-encoded: `src/captions/embed.js` has Mediabunny copy every packet of the
+picture and the sound into a new file of the same kind and add one track
+more. The copy is made when the button is clicked, in a few milliseconds.
+
+- The subtitles are WebVTT, the only subtitle format Mediabunny writes:
+  `S_TEXT/WEBVTT` in WebM and Matroska, `wvtt` in MP4.
+- A recording in a container that holds no subtitles is copied into one that
+  does: Firefox's Ogg (sound alone) becomes WebM.
+- The copy keeps the recording's timestamps exactly (the conversion is told
+  to start at 0, not at the first packet), since the subtitles' times are
+  the recording's.
+- Mediabunny can write a subtitle track but not read one, so the copy is
+  always made from the take's original recording, and the tests read the
+  track back with a small Matroska reader of their own
+  (`test/lib/matroska.mjs`).
+
+**Players differ**, which is the reason to keep the other downloads:
+
+- **VLC 3.0.24** finds the track in all three containers (checked from its
+  log, not by eye). For WebM and Matroska it starts its WebVTT decoder by
+  itself. For MP4 it lists the track (`wvtt`, English) and decodes it once
+  it's switched on under Subtitle.
+- **Browsers** don't expose a subtitle track that is inside the file:
+  Edge and Firefox play the copies and report no text tracks. That is why a
+  take's card plays the recording with its subtitles beside it, as a
+  `<track>`.
+- A `.vtt` or `.srt` next to the recording, with the same name, works in
+  more places than either.
+
 ### What the caption tests have shown so far
 
 On one Windows desktop, with fake devices, in Edge 157 and Firefox 161.
@@ -386,9 +423,29 @@ says otherwise.
   about as much: its times look like where each word ends. base.en's are
   close: "Speech" at 0.86 s in the same clip (one check, in Node). Subtitles
   cut on tiny.en's word times start late by a word.
-- **Once, a file take's first caption began at the take's start** rather than
-  0.3 s before its speech: the detector heard the stream's first frames as
-  speech. It didn't happen again in the next four takes, or in the tests.
+- **Firefox's first block of a media file's sound can be a burst from later
+  in the file.** In about one fresh launch in five, the first 100 ms the tap
+  delivered (the AudioContext's frames 0 to 4,863) was loud, with the same
+  peak as the speech a second later, and then silence until the speech
+  itself. It arrives before the take starts, so the recording never holds
+  it, but the captions' detector heard it, and the first caption stretched
+  back to the take's start. A cut at a take's edge now also forgets what
+  was heard before it; in six fresh launches the burst came once, and that
+  take's first caption started where its speech does.
+
+**Subtitles inside the recording**
+
+- **Every container the bench writes took the track**, with the recording's
+  packets, key frames and first timestamps unchanged: MediaRecorder's WebM
+  and MP4, the WebCodecs recorder's Matroska and MP4, WebM with sound alone,
+  and Firefox's Ogg (copied into WebM, where its first timestamp of -6 ms
+  became -7 ms: WebM counts in milliseconds). Each took 3 to 27 ms and added
+  about 300 to 3,900 bytes.
+- **The cues in the file are the subtitles, to the millisecond**: read back
+  from the WebM and Matroska copies, each cue's start, end and text match.
+- **MediaRecorder's files gain a declared duration** on the way: the copy of
+  a WebM that declared none declares 7.003 s, and of an MP4 that declared
+  0.252 s, 7.047 s.
 
 **Found on the way**
 
@@ -399,6 +456,12 @@ says otherwise.
 - A finished utterance now goes ahead of a waiting interim, and an interim
   that is out of date is dropped from the queue. Before, they ran in the
   order they were queued.
+- **Firefox's VideoEncoder sometimes refuses a take it usually accepts.** In
+  about one run of the tests in four, the WebCodecs recorder's camera take
+  (VP8, 640 × 480) stopped after 0.06 to 0.13 s with `EncodingError: The
+  given encoding is not supported`; once, the two tests after it failed
+  with it. The same test passes in the other runs. Captions were off. Not
+  looked into yet.
 
 ### Captions' limits, for now
 
@@ -410,8 +473,9 @@ says otherwise.
   no transcript.
 - One offset places a whole take. Each pause can differ by a few
   milliseconds between the tap and the recorder, which isn't corrected.
-- Subtitles are a separate file, or the card's own track: nothing is written
-  into the recording yet.
+- Subtitles inside the recording are WebVTT only, and which players show
+  them varies. An MP4 copy's track is checked by its bytes and by VLC's log;
+  nothing here reads an MP4 subtitle track back.
 - English only, in practice.
 - Whisper isn't a streaming model. A final caption can't come sooner than the
   pause that ends its utterance plus the model's time over it.
@@ -950,6 +1014,7 @@ page/captions.js              live captions: the overlay, the transcript, the Ca
 src/captions/tap-feed.js      the tap's blocks to 16 kHz mono, with their place on the context's clock, and cuts at a frame (no DOM)
 src/captions/timeline.js      context frames to take time to file time; which captions a take keeps (no DOM)
 src/captions/subtitles.js     a transcript cut into subtitles; WebVTT, SubRip, text and JSON (no DOM)
+src/captions/embed.js         the recording copied with its subtitles as a track (Mediabunny; no DOM)
 src/speech/core.js            the speech engine's settings, the worker's client and job queue, transcript clean-up
 src/speech/engine-worker.js   the worker that hosts the model: loading, WebGPU with its fallback, word times
 src/speech/asr-engine.js, whisper-engine.js, ctc-engine.js  the transcription engines (they run in Node too)
@@ -968,8 +1033,10 @@ scripts/check-sources.mjs     checks every link the explanations cite
 scripts/check-blockers.mjs    checks that no ad or tracker blocker's list would block the bench's files
 scripts/install-chrome-for-testing.mjs  Chrome for Testing into Puppeteer's cache, for the end-to-end tests
 test/unit/                    node --test: WAV, pattern, metrics, sound, constraints, types, codecs, probing,
-                              the speech engine's pure parts, the tap feed, the timeline, subtitles, what the pages load
+                              the speech engine's pure parts, the tap feed, the timeline, subtitles,
+                              subtitles written into a file, what the pages load
 test/engine.test.mjs          the speech model in Node, on the fixtures
+test/lib/matroska.mjs         reads a WebM or Matroska file's subtitle cues from its bytes, for the tests
 test/browser.test.mjs         end-to-end, in real browsers
 test/fixtures/                fox.wav and two-sentences.wav (from automatic-speech-recognition-and-diarization)
 ```
@@ -995,7 +1062,7 @@ from a static host.
 ```sh
 # Pure code (WAV, the test pattern, metrics, sound, constraints, MIME types, probing,
 # the speech engine's registry, resampler, segmenter and detectors, the tap feed,
-# the take's timeline, subtitles); no browser
+# the take's timeline, subtitles, subtitles written into a Matroska and an MP4 file); no browser
 npm run test:unit
 
 # The speech model itself, in Node: needs a model in models/
@@ -1039,6 +1106,9 @@ in for the camera and microphone, and prompts are granted without asking.
   where the take's own decoded sound has speech. They cover a recorded file
   in every browser, both recorders, a paused take in Chromium, the card's
   subtitles and downloads, and word times.
+- The tests of subtitles inside the recording read the copy's subtitle track
+  back from its bytes and compare every cue, for WebM (every browser) and
+  Matroska; an MP4 copy is checked for its `wvtt` track and the cues' text.
 
 The tests look for each browser in its usual install location. These
 environment variables change that and other settings:
@@ -1062,7 +1132,7 @@ environment variables change that and other settings:
      page, fed by the same audio tap the takes use.
   2. Done: a timed transcript saved with each take, on the saved file's own
      timeline, and `.vtt`, `.srt`, `.txt` and `.json` downloads.
-  3. The subtitles written into the saved file as a track.
+  3. Done: the subtitles written into a copy of the saved file as a track.
   4. A second, slower transcription of the finished take, and captions
      drawn into the picture.
   5. The bench published on GitHub Pages.

@@ -72,8 +72,9 @@ function captureError(code, err) {
 // adapts while nobody is speaking; a detector (vad.js) decides instead, and
 // the energy rule only drives the sound handler. Handlers get the sample
 // offset where each utterance starts, counted from the first push (segment
-// also gets { cut }: whether cut() ended it), and optionally vad(score,
-// speech) for every frame. A detector that answers
+// also gets { cut, continued }: whether cut() ended it, and whether it began
+// with speech that was already going when a cut came), and optionally
+// vad(score, speech) for every frame. A detector that answers
 // asynchronously (Silero) delays the handlers; flush() then returns a Promise
 // that resolves once the last frames are decided.
 export class Segmenter {
@@ -95,6 +96,8 @@ export class Segmenter {
     this.preRoll = [];
     this.frames = null;
     this.run = 0;
+    this.sinceCut = Infinity; // frames since the last cut()
+    this.continued = false; // the utterance in progress began at a cut, mid-speech
     this.segmentId = 0;
     this.framesSeen = 0;
   }
@@ -126,19 +129,25 @@ export class Segmenter {
 
   // Ends the current utterance where it is and carries on listening: for a
   // boundary the caller sets (a take starting, pausing or stopping), so no
-  // utterance spans it. The segment handler is told ({ cut: true }): the
-  // speech went on past the cut. Unlike flush() it leaves the detector's own
-  // state alone. Returns a Promise when the detector is still deciding
-  // frames; the utterance then ends with the frames heard by the time it
-  // resolves.
+  // utterance spans it. The segment handler is told ({ cut: true }) when the
+  // speech went on past the cut: not when the utterance was only waiting out
+  // the pause that would have ended it. What was heard before the cut is forgotten
+  // too (the lead-in kept for the next utterance, and a run of speech not
+  // yet long enough to start one), so nothing from before it can end up in
+  // an utterance after it; one that starts within two frames of the cut is
+  // marked continued: the speech was already going. Unlike flush() it leaves
+  // the detector's own state alone. Returns a Promise when the detector is
+  // still deciding frames; the cut is then made once it has.
   cut() {
-    if (!this.decided) {
-      if (this.frames) this.#endSegment(this.silent, true);
-      return undefined;
-    }
-    return this.decided.then(() => {
-      if (this.frames) this.#endSegment(this.silent, true);
-    });
+    const here = () => {
+      // Quiet for longer than the tail an utterance keeps: the speech had stopped by itself.
+      if (this.frames) this.#endSegment(this.silent, this.silent <= this.trailFrames);
+      this.preRoll = [];
+      this.run = 0;
+      this.sinceCut = 0;
+    };
+    if (!this.decided) return void here();
+    return this.decided.then(here);
   }
 
   #next(frame) {
@@ -151,6 +160,7 @@ export class Segmenter {
   // score: the detector's answer for this frame, or null for the energy rule.
   #frame(frame, score) {
     this.framesSeen++;
+    this.sinceCut++;
     const { rms, loud } = this.energy.measure(frame);
     const voiced = score === null ? loud : score >= this.detector.threshold;
     if (rms > Math.max(this.energy.noise * 2, 0.003)) this.handlers.sound();
@@ -168,6 +178,8 @@ export class Segmenter {
         this.startSample = (this.framesSeen - this.frames.length) * this.frameSize;
         this.voiced = this.run;
         this.silent = 0;
+        // The first frame of this run of speech was the first or second after a cut.
+        this.continued = this.sinceCut - this.run < 2;
         this.segmentId++;
         this.handlers.speechStart(this.segmentId, this.startSample);
       }
@@ -199,7 +211,7 @@ export class Segmenter {
     this.frames = null;
     this.run = 0;
     if (voiced >= this.minVoicedFrames) {
-      this.handlers.segment(id, concat(frames.slice(0, keep)), this.startSample, { cut });
+      this.handlers.segment(id, concat(frames.slice(0, keep)), this.startSample, { cut, continued: this.continued });
     } else {
       this.handlers.discard(id);
     }

@@ -81,25 +81,22 @@ export function estimatedOffset({ recorder, timeline }) {
 
 // The take's captions, on the file's timeline. segments: the transcriber's
 // final segments ({ id, start, end, transcript, confidence, words?, latency?,
-// ms? }, in seconds of the audio fed); clock: the feed's ({ rate, firstFrame });
+// ms?, cut?, continued? }, in seconds of the audio fed); clock: the feed's ({ rate, firstFrame });
 // timeline: the take's; offsetS: from fileOffset(); duration: the file's, to
 // clip to. Kept: the segments said while the take was recording (their
 // middle is in it). Each is clipped to the take. clipped: true marks one that
 // lost something to the take's edges:
 // - the speech went on past a cut (its cut flag: the take paused or stopped
 //   mid-sentence);
-// - it starts where the take started or resumed, within two of the
-//   detector's 20 ms frames: an utterance only starts that soon after a cut
-//   when the speech was already going, so its beginning is outside the take;
-// - or clipping moved an end by more than one such frame.
+// - it began at a cut with the speech already going (its continued flag:
+//   the take started or resumed mid-sentence), so its beginning is outside
+//   the take;
+// - or clipping moved an end by more than one of the detector's 20 ms frames.
 // Words outside the take are dropped. frames is the segment's own range on
 // the context's clock, so its time can be worked out again.
 export function placeSegments(segments, clock, timeline, { offsetS = 0, duration = Infinity } = {}) {
   const frameAt = (seconds) => clock.firstFrame + Math.round(seconds * clock.rate);
   const fileTime = (frame) => Math.min(duration, Math.max(0, timeline.takeTime(frame) + offsetS));
-  // Where recording began or began again.
-  const starts = [timeline.startFrame, ...timeline.gaps.map(([, to]) => to)];
-  const nearStart = (frame) => starts.some((at) => Math.abs(frame - at) <= 0.04 * clock.rate);
   const placed = [];
   for (const s of segments) {
     if (!s.transcript) continue;
@@ -111,7 +108,7 @@ export function placeSegments(segments, clock, timeline, { offsetS = 0, duration
     // What the clipping took off, in seconds of speech.
     const kept = end - start;
     const out = { id: s.id, start, end, transcript: s.transcript, confidence: s.confidence, speaker: s.speaker ?? null, frames };
-    if (s.cut || nearStart(frames[0]) || s.end - s.start - kept > 0.02 + 1e-9) out.clipped = true;
+    if (s.cut || s.continued || s.end - s.start - kept > 0.02 + 1e-9) out.clipped = true;
     if (s.words?.length) {
       out.words = s.words
         .filter((w) => timeline.recorded(frameAt((w.start + w.end) / 2)))

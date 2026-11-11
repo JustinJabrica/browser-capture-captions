@@ -197,8 +197,8 @@ export function createCaptions({ overlay, list, chip, log }) {
     run = last = mine;
     transcriber.onsegment = (event) => {
       if (run !== mine) return;
-      const { id, isFinal, transcript, confidence, start: from, end, speaker, words: timed, latency, ms, cut } = event;
-      const segment = { id, isFinal, transcript, confidence, start: from, end, speaker, ...(timed && { words: timed }), ...(latency != null && { latency }), ...(ms != null && { ms }), ...(cut && { cut }) };
+      const { id, isFinal, transcript, confidence, start: from, end, speaker, words: timed, latency, ms, cut, continued } = event;
+      const segment = { id, isFinal, transcript, confidence, start: from, end, speaker, ...(timed && { words: timed }), ...(latency != null && { latency }), ...(ms != null && { ms }), ...(cut && { cut }), ...(continued && { continued }) };
       if (isFinal && transcript) {
         mine.finals.push(segment);
         log.add("result", "caption", `[${clock(from)}–${clock(end)}] ${transcript}${latency != null ? ` · ${latency.toFixed(2)} s after it ended` : ""}`);

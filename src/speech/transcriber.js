@@ -40,15 +40,17 @@ const EVENTS = ["start", "segment", "vad", "error", "end"];
 // Final segments also carry latency: seconds from the moment the utterance
 // closed (silenceMs of quiet after the speech, maxSegmentMs, or a cut) to
 // this segment's delivery, which includes waiting behind earlier utterances.
-// cut is true on a final segment that cut() ended while the speech went on.
+// cut is true on a final segment that cut() ended while the speech went on,
+// and continued on one that began at a cut with the speech already going.
 // speaker is always null here: speaker labels are a later stage.
 export class SegmentEvent extends Event {
-  constructor(type, { id, isFinal, transcript, confidence, start, end, speaker, words, latency, cut }) {
+  constructor(type, { id, isFinal, transcript, confidence, start, end, speaker, words, latency, cut, continued }) {
     super(type);
     Object.assign(this, { id, isFinal, transcript, confidence, start, end, speaker });
     if (words) this.words = words;
     if (latency != null) this.latency = latency;
     if (cut) this.cut = true;
+    if (continued) this.continued = true;
   }
 }
 
@@ -278,12 +280,13 @@ class LiveRun {
       .finally(() => (this.interimBusy = false));
   }
 
-  utteranceEnd(utterance, audio, startSample, { cut = false } = {}) {
+  utteranceEnd(utterance, audio, startSample, { cut = false, continued = false } = {}) {
     const active =
       this.active?.utterance === utterance
         ? this.active
         : { utterance, id: this.nextId(), start: seconds(startSample), shown: false };
     active.cut = cut;
+    active.continued = continued;
     this.active = null;
     // An interim still waiting is out of date now: the whole utterance is about to be transcribed.
     engine.cancel(this.key, `${this.key}-interim`);
@@ -317,6 +320,7 @@ class LiveRun {
         words: shiftWords(r.words, utterance.start),
         ms: r.ms,
         cut: utterance.cut,
+        continued: utterance.continued,
       },
     ];
   }

@@ -11,6 +11,7 @@
 
 import { extractTrack } from "../src/container.js";
 import { analyseTake } from "../src/take-report.js";
+import { embedSubtitles } from "../src/captions/embed.js";
 import { asJson, asSrt, asText, asVtt, toCues } from "../src/captions/subtitles.js";
 import { PcmTap, audioGraph, warmOnGestures } from "../src/audio.js";
 import { APIS, browserName, capabilities, env } from "../src/capabilities.js";
@@ -1019,11 +1020,12 @@ document.addEventListener("click", async (e) => {
   if (kind === "audio" || kind === "video") return downloadSolo(button, entry, kind);
   const ext = take.files?.ext ?? "bin";
   if (kind === "report") return download(`${take.name}.json`, JSON.stringify(take, null, 1), "application/json");
-  if (["vtt", "srt", "txt", "transcript"].includes(kind)) {
+  if (["vtt", "srt", "txt", "transcript", "subtitled"].includes(kind)) {
     const transcript = chosenTranscript(take, transcripts);
     if (!transcript) return;
     // Subtitles are cut from the transcript now, with the Captions tab's limits as they are.
     const cues = () => toCues(transcript.segments, { ...cueOptions(), duration: take.analysis?.file?.probe?.duration ?? Infinity });
+    if (kind === "subtitled") return downloadSubtitled(button, entry, asVtt(cues()));
     if (kind === "vtt") return download(`${take.name}.vtt`, asVtt(cues()), "text/vtt");
     if (kind === "srt") return download(`${take.name}.srt`, asSrt(cues()), "application/x-subrip");
     if (kind === "txt") return download(`${take.name}.txt`, asText(transcript.segments), "text/plain");
@@ -1048,6 +1050,24 @@ async function downloadSolo(button, entry, kind) {
     entry.solo[kind] = null;
     log.add("error", "extract", `${kind} only: ${err.message ?? err}`);
     showAlert(alerts, { title: `The ${kind} couldn't be copied out on its own`, detail: String(err?.message ?? err) });
+  } finally {
+    button.disabled = false;
+  }
+}
+
+// The recording with its subtitles written into it as a track: a copy made
+// when asked for, from the take's original recording.
+async function downloadSubtitled(button, entry, vtt) {
+  if (!entry.media.file) return;
+  button.disabled = true;
+  try {
+    const started = performance.now();
+    const made = await embedSubtitles(entry.media.file, vtt);
+    log.add("result", "embed", `${entry.take.name}: subtitles written into a ${made.ext.toUpperCase()} copy as a track · ${made.tracks.map((t) => `${t.type} ${t.codec}`).join(" + ")} copied · ${bytes(made.blob.size)} · ${Math.round(performance.now() - started)} ms`);
+    download(`${entry.take.name}-subtitled.${made.ext}`, made.blob);
+  } catch (err) {
+    log.add("error", "embed", err.message ?? String(err));
+    showAlert(alerts, { title: "The subtitles couldn't be written into the recording", hint: "The .vtt and .srt downloads hold the same subtitles as files of their own.", detail: String(err?.message ?? err) });
   } finally {
     button.disabled = false;
   }

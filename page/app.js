@@ -1,8 +1,9 @@
 // The capture bench (index.html). Pick a source, preview it with its levels
 // and what the browser gave against what was asked for, and record takes.
 // While a source is open, a speech model in the page captions what it hears.
-// Each take is analysed after Stop and saved, with its files, in the Takes
-// view; the Browser view shows what this browser supports.
+// Each take is analysed after Stop and saved, with its files and the
+// transcript of what was said while it recorded, in the Takes view; the
+// Browser view shows what this browser supports.
 //
 // A session is an open source: its stream, the layers that made it (the
 // source, then the mixed-in microphone and the WebRTC loopback, if on), and
@@ -10,6 +11,7 @@
 
 import { extractTrack } from "../src/container.js";
 import { analyseTake } from "../src/take-report.js";
+import { asJson, asSrt, asText, asVtt, toCues } from "../src/captions/subtitles.js";
 import { PcmTap, audioGraph, warmOnGestures } from "../src/audio.js";
 import { APIS, browserName, capabilities, env } from "../src/capabilities.js";
 import { loopback, mixInMic } from "../src/pipeline.js";
@@ -27,7 +29,7 @@ import { createCaptions } from "./captions.js";
 import { createCompare } from "./compare.js";
 import { setupExplainers } from "./explain.js";
 import { cardHTML, fillCard, tracksHTML } from "./take-view.js";
-import { clearTakes, deleteTake, exportTakes, importTakes, listTakes, saveTake, storageUse, takeMedia } from "./takes.js";
+import { clearTakes, deleteTake, exportTakes, importTakes, listTakes, saveTake, storageUse, takeMedia, takeTranscripts, transcriptSummary } from "./takes.js";
 import {
   $,
   bytes,
@@ -286,6 +288,21 @@ const CAPTION_PARAMS = [
   { key: "ccMaxSegmentMs", label: "longest utterance", type: "number", def: 20000, unit: "ms", min: 2000, max: 28000, step: 500, desc: "Speech without a pause is cut after this long. Whisper hears 30 s at a time and drops what's past that." },
   { key: "ccInterim", label: "interim text", type: "switch", def: true, desc: "Show a first guess while someone is still speaking, by transcribing the utterance so far again and again. Off leaves the processor to the recorder until each utterance ends." },
   { key: "ccInterimIntervalMs", label: "interim every", type: "number", def: 500, unit: "ms", min: 100, step: 50, desc: "How often the utterance so far is transcribed again for the interim text, at most." },
+  {
+    key: "ccWords",
+    label: "word times",
+    type: "select",
+    def: "off",
+    options: [
+      ["off", "off (subtitles are timed by estimate)"],
+      ["whisper", "from Whisper (its timestamped export)"],
+      ["align", "by forced alignment (wav2vec2, 95 MB more)"],
+    ],
+    desc: "Time every word of a final caption, so subtitles can break exactly between words. Either way loads more than the model alone, and adds to each caption's delay.",
+  },
+  { key: "ccCueChars", label: "subtitle line", type: "number", def: 42, unit: "characters", min: 16, max: 80, step: 1, desc: "The longest line of a subtitle. Read when a take's subtitles are made: for playback and for each download." },
+  { key: "ccCueLines", label: "subtitle lines", type: "number", def: 2, min: 1, max: 4, step: 1, desc: "The most lines a subtitle may have." },
+  { key: "ccCueSeconds", label: "subtitle on screen", type: "number", def: 6, unit: "s", min: 1, max: 20, step: 0.5, desc: "The longest a subtitle stays up before the next takes over." },
 ];
 
 const params = createParams({
@@ -326,14 +343,16 @@ const params = createParams({
       id: "captions",
       title: "Captions",
       badge: "Whisper · Transformers.js",
-      when: "Read when a source opens. The speech model loads the first time, and again after <code>model</code> or <code>device</code> changes. <b>Close source</b> to use a change.",
+      when: "Read when a source opens. The speech model loads the first time, and again after <code>model</code>, <code>device</code> or <code>word times</code> changes. <b>Close source</b> to use a change. The subtitle settings are read when a take's subtitles are made.",
       params: CAPTION_PARAMS,
     },
     { id: "analysis", title: "Analysis", badge: "after Stop", when: "Used when a take is analysed, after <b>Stop</b>.", params: ANALYSIS_PARAMS },
   ],
 });
 
-const captions = createCaptions({ overlay: $("captions"), chip: $("speech"), log });
+const captions = createCaptions({ overlay: $("captions"), list: $("transcript-list"), chip: $("speech"), log });
+// How a transcript is cut into subtitles, as the Captions tab has it now.
+const cueOptions = () => ({ maxChars: params.get("ccCueChars") ?? 42, maxLines: params.get("ccCueLines") ?? 2, maxDurationS: params.get("ccCueSeconds") ?? 6 });
 
 const kbps = (v) => (v == null ? undefined : Math.round(v * 1000));
 const cameraSettings = (v) => ({ ...v, videoDevice: $("camera-device").value, audioDevice: $("mic-device").value });
@@ -672,7 +691,8 @@ async function record() {
       return;
     }
   }
-  s.tap?.record();
+  // The take starts at this frame of the context's clock: the caption in progress is cut there.
+  captions.boundary(s.tap?.record());
   s.frames?.record();
   for (const list of s.trackEvents.values()) list.length = 0; // the take keeps its own track events
   current = { recorder, settings: v, startedAt: Date.now(), t0: performance.now(), timer: 0, stopping: false };
@@ -688,14 +708,14 @@ function togglePause() {
   if (!current) return;
   if (current.recorder.state === "recording") {
     current.recorder.pause();
-    session.tap?.pause();
+    captions.boundary(session.tap?.pause());
     session.frames?.pause();
     if (session.kind === "file") player.pause();
     setState("paused");
     status.set("paused", "Paused");
   } else {
     current.recorder.resume();
-    session.tap?.resume();
+    captions.boundary(session.tap?.resume());
     session.frames?.resume();
     if (session.kind === "file") player.play().catch(() => {});
     setState("recording");
@@ -718,6 +738,9 @@ async function finishTake(reason = null) {
   status.stopTimer();
   status.set("analysing", "Finishing the take", "");
   const [file, tap] = await Promise.all([take.recorder.stop(), s.tap?.recording ? s.tap.finish() : null]);
+  // The caption in progress ends with the take. Its text may take the model a
+  // few seconds more, which pass while the take is analysed.
+  const captioning = tap && captions.run ? captions.boundary(tap.endFrame, { waitMs: 20000 }) : null;
   const cameras = s.frames?.finish() ?? null;
   const webrtc = s.rtc ? await s.rtc.info().catch(() => null) : null;
   const tracks = trackInfo(s);
@@ -750,7 +773,21 @@ async function finishTake(reason = null) {
       settings: take.settings,
       files: { ext: extensionFor(r.mimeType || file.type) },
     };
-    await keep(report, media);
+    let live = null;
+    if (captioning) {
+      status.set("analysing", "Waiting for the last captions", "");
+      const complete = await captioning;
+      live = captions.takeTranscript({ takeId: report.id, tap, analysis, recorder: r, complete });
+      if (live) {
+        const c = live.clock;
+        log.add(
+          complete ? "result" : "error",
+          "transcript",
+          `${live.stats.segments} caption${live.stats.segments === 1 ? "" : "s"}, ${live.stats.words} words · the take starts ${Math.round(c.offsetS * 1000)} ms into the file (${c.offsetFrom})${live.stats.clipped ? ` · ${live.stats.clipped} clipped at the take's edges` : ""}${complete ? "" : " · the model was still working: the last captions are missing"}`,
+        );
+      }
+    }
+    await keep(report, media, { live });
   } catch (err) {
     log.add("error", "analyse", `${err.name ?? "Error"}: ${err.message ?? err}`);
     showError(alerts, err);
@@ -809,18 +846,22 @@ async function analyseWholeFile() {
 
 // Saves a take and shows it under the preview. A take that can't be saved is
 // still shown.
-async function keep(report, media) {
+async function keep(report, media, transcripts = {}) {
   let saved;
   try {
-    saved = await saveTake(report, media);
+    saved = await saveTake(report, media, transcripts);
   } catch (err) {
-    saved = { ...report, media: Object.fromEntries(Object.entries(media).map(([k, b]) => [k, Boolean(b)])) };
+    saved = {
+      ...report,
+      media: Object.fromEntries(Object.entries(media).map(([k, b]) => [k, Boolean(b)])),
+      transcripts: { live: transcriptSummary(transcripts.live), final: transcriptSummary(transcripts.final), chosen: transcripts.final ? "final" : transcripts.live ? "live" : null },
+    };
     showAlert(alerts, { kind: "warn", title: "The take couldn't be saved", hint: "It's shown below, but it won't be in Takes. The browser may be out of storage space.", detail: String(err?.message ?? err) });
   }
   const a = report.analysis;
   log.add("result", "take", `${report.name} · ${bytes(a.file.size)}${a.match ? ` · starts ${Math.round(a.match.lagS * 1000)} ms, ends ${Math.round(a.match.endS * 1000)} ms against the tap · match ${a.match.waveScore.toFixed(3)}` : ""}`);
   status.set("done", "Take saved", "");
-  showCard($("latest"), saved, media);
+  showCard($("latest"), saved, media, transcripts);
   await refreshTakes();
   return saved;
 }
@@ -948,14 +989,16 @@ navigator.mediaDevices?.addEventListener?.("devicechange", () => {
 
 // --- Take cards ------------------------------------------------------------------------------------
 
-// Rendered cards' takes and files, for their buttons.
-const cards = new Map(); // host -> { take, media, release }
-function showCard(host, take, media) {
+// Rendered cards' takes, files and transcripts, for their buttons.
+const cards = new Map(); // host -> { take, media, transcripts, release }
+function showCard(host, take, media, transcripts = {}) {
   cards.get(host)?.release();
   host.innerHTML = cardHTML(take, { deletable: host.id === "compare-detail" });
   const card = host.querySelector(".take");
-  cards.set(host, { take, media, release: fillCard(card, take, media) });
+  cards.set(host, { take, media, transcripts, release: fillCard(card, take, media, { transcript: chosenTranscript(take, transcripts), cueOptions: cueOptions() }) });
 }
+// The transcript a take's subtitles come from: the one its report names, else whichever there is.
+const chosenTranscript = (take, transcripts) => transcripts[take.transcripts?.chosen] ?? transcripts.final ?? transcripts.live ?? null;
 function cardAt(el) {
   const host = el.closest(".take")?.parentElement;
   return host ? cards.get(host) : null;
@@ -965,7 +1008,7 @@ document.addEventListener("click", async (e) => {
   if (!button) return;
   const entry = cardAt(button);
   if (!entry) return;
-  const { take, media } = entry;
+  const { take, media, transcripts } = entry;
   if (button.dataset.delete !== undefined) {
     await deleteTake(take.id);
     log.add("result", "deleted", take.name);
@@ -976,6 +1019,16 @@ document.addEventListener("click", async (e) => {
   if (kind === "audio" || kind === "video") return downloadSolo(button, entry, kind);
   const ext = take.files?.ext ?? "bin";
   if (kind === "report") return download(`${take.name}.json`, JSON.stringify(take, null, 1), "application/json");
+  if (["vtt", "srt", "txt", "transcript"].includes(kind)) {
+    const transcript = chosenTranscript(take, transcripts);
+    if (!transcript) return;
+    // Subtitles are cut from the transcript now, with the Captions tab's limits as they are.
+    const cues = () => toCues(transcript.segments, { ...cueOptions(), duration: take.analysis?.file?.probe?.duration ?? Infinity });
+    if (kind === "vtt") return download(`${take.name}.vtt`, asVtt(cues()), "text/vtt");
+    if (kind === "srt") return download(`${take.name}.srt`, asSrt(cues()), "application/x-subrip");
+    if (kind === "txt") return download(`${take.name}.txt`, asText(transcript.segments), "text/plain");
+    return download(`${take.name}-transcript.json`, asJson(transcript, { source: `${take.name}.${ext}` }), "application/json");
+  }
   const names = { file: `${take.name}.${ext}`, seekable: `${take.name}-seekable.${ext}`, tap: `${take.name}-tap.wav`, pcm16k: `${take.name}-16k.wav` };
   if (media[kind]) download(names[kind], media[kind]);
 });
@@ -1006,7 +1059,7 @@ const compare = createCompare({
   host: $("takes"),
   onOpen: async (take, host) => {
     const media = take.imported ? {} : await takeMedia(take.id).catch(() => ({}));
-    showCard(host, take, media);
+    showCard(host, take, media, await takeTranscripts(take.id).catch(() => ({})));
   },
 });
 

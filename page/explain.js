@@ -73,6 +73,7 @@ const RULES = [
     "#meters": "meters",
     "#log-clear": "log-clear",
     "#events-h": "events",
+    "#transcript-h": "live-transcript",
     ".brand": "bench-overview",
     '.nav a[href="./"]': "bench-index",
     '.nav a[href="guide.html"]': "guide",

@@ -79,7 +79,10 @@ export function warmOnGestures() {
 // onLevels ({ peaks, rms } per channel) the whole time; between record() and
 // finish() they are also kept, except between pause() and resume(), as the
 // recorder does. Frames are counted on the context's clock, so the take
-// starts at the frame playing when record() is called.
+// starts at the frame playing when record() is called. record(), pause() and
+// resume() return that frame, and finish() the take's whole timeline, so
+// that anything else timed on the context's clock (the captions) can be
+// placed in the take.
 export class PcmTap {
   #context = null;
   #source = null;
@@ -153,21 +156,27 @@ export class PcmTap {
     return Math.round(this.#context.currentTime * this.#context.sampleRate);
   }
 
+  // Each returns the context frame it took effect at (null when it did nothing).
   record() {
     this.#blocks = [];
     this.#gaps = [];
     this.#pausedAt = null;
     this.#from = this.#now();
+    return this.#from;
   }
 
   pause() {
-    if (this.recording && this.#pausedAt == null) this.#pausedAt = this.#now();
+    if (!this.recording || this.#pausedAt != null) return null;
+    this.#pausedAt = this.#now();
+    return this.#pausedAt;
   }
 
   resume() {
-    if (this.#pausedAt == null) return;
-    this.#gaps.push([this.#pausedAt, this.#now()]);
+    if (this.#pausedAt == null) return null;
+    const now = this.#now();
+    this.#gaps.push([this.#pausedAt, now]);
     this.#pausedAt = null;
+    return now;
   }
 
   get recording() {
@@ -184,8 +193,10 @@ export class PcmTap {
     return () => this.#listeners.delete(fn);
   }
 
-  // Ends the take: { sampleRate, channels, frames, startFrame, lostFrames,
-  // emptyFrames }. lostFrames counts frames that never arrived between blocks.
+  // Ends the take: { sampleRate, channels, frames, startFrame, endFrame, gaps,
+  // lostFrames, emptyFrames }. The take is the context frames from startFrame
+  // to endFrame, less the gaps ([from, to) while paused). lostFrames counts
+  // frames that never arrived between blocks.
   async finish() {
     const to = this.#now();
     if (this.#pausedAt != null) this.#gaps.push([this.#pausedAt, to]);
@@ -200,7 +211,7 @@ export class PcmTap {
     const blocks = (this.#blocks ?? []).filter((b) => b.channels.length);
     this.#blocks = null;
     const count = Math.max(0, ...blocks.map((b) => b.channels.length));
-    const take = { sampleRate: this.#context.sampleRate, channels: [], frames: 0, startFrame: this.#from, lostFrames: 0, emptyFrames: 0 };
+    const take = { sampleRate: this.#context.sampleRate, channels: [], frames: 0, startFrame: this.#from, endFrame: to, gaps: this.#gaps.map(([a, b]) => [a, b]), lostFrames: 0, emptyFrames: 0 };
     if (!count) return take;
     // Only the frames from record() to finish(), less the pauses: blocks are trimmed to fit.
     const pieces = [];

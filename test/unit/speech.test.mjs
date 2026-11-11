@@ -170,7 +170,7 @@ test("Resampler: what's above the new rate's half is filtered out", () => {
 async function utterances(audio, { detector = null, cutAt = [], step = 1600 } = {}) {
   const found = [];
   const segmenter = new Segmenter(
-    { sound() {}, speechStart() {}, progress() {}, discard() {}, segment: (id, pcm, start) => found.push([start / SAMPLE_RATE, (start + pcm.length) / SAMPLE_RATE]) },
+    { sound() {}, speechStart() {}, progress() {}, discard() {}, segment: (id, pcm, start, how) => found.push(Object.assign([start / SAMPLE_RATE, (start + pcm.length) / SAMPLE_RATE], { cut: how.cut })) },
     { silenceMs: 800, maxSegmentMs: 20000, detector },
   );
   const cuts = [...cutAt];
@@ -201,6 +201,7 @@ test("Segmenter.cut ends the utterance in progress there, and listening carries 
   const middle = (first[0] + first[1]) / 2;
   const found = await utterances(audio, { cutAt: [middle] });
   assert.equal(found.length, 3, JSON.stringify(found));
+  assert.deepEqual(found.map((u) => u.cut), [true, false, false], "only the utterance the cut ended says so");
   assert.ok(Math.abs(found[0][0] - first[0]) < 0.001 && Math.abs(found[0][1] - middle) <= 0.1, `the first part ends at the cut: ${JSON.stringify(found[0])}`);
   // The rest of the sentence is heard as its own utterance, starting no earlier than the cut less the pre-roll.
   assert.ok(found[1][0] >= middle - 0.3 - 0.1 && Math.abs(found[1][1] - first[1]) < 0.05, JSON.stringify(found[1]));

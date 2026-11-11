@@ -203,7 +203,8 @@ function checkTake(t, seconds) {
   assert(a.file.probe, `the file couldn't be read: ${a.file.probeError}`);
   // Ogg has no header for a duration (players read the last page's granule position), so only it may lack both.
   assert(a.file.declaresDuration || a.file.remuxed || a.file.probe.container === "Ogg", `${a.file.probe.container}: no declared duration and no seekable copy`);
-  assert(near(t.wallS, seconds, 1), `recorded ${t.wallS} s, expected about ${seconds}`);
+  // A take that stopped early says why, when the recorder knows.
+  assert(near(t.wallS, seconds, 1), `recorded ${t.wallS} s, expected about ${seconds}${t.recorder?.error ? ` (the recorder stopped: ${t.recorder.error})` : ""}`);
   assert(near(a.decoded?.duration, t.wallS, 0.5), `decoded ${a.decoded?.duration} s against ${t.wallS} s recorded`);
   assert(near(a.tap?.frames / a.tap?.sampleRate, t.wallS, 0.5), `the tap holds ${a.tap?.frames} frames at ${a.tap?.sampleRate} Hz`);
   assert(near(a.extracted?.frames, a.decoded.duration * 16000, 160), `16 kHz copy: ${a.extracted?.frames} samples for ${a.decoded.duration} s`);
@@ -506,7 +507,7 @@ async function pausedTake() {
   await sleep(2500);
   await page.click("#pause");
   await page.waitForFunction(() => window.captureBench.state() === "paused");
-  // How long the pause really was: a busy page (headless Firefox encoding on its main thread) answers a click late.
+  // How long the pause was, as the test saw it: a busy page (headless Firefox encoding on its main thread) answers a click late.
   const pausedAt = Date.now();
   await sleep(1500);
   await page.click("#pause");
@@ -518,7 +519,9 @@ async function pausedTake() {
   const t = await page.evaluate(() => window.captureBench.latest);
   await closeSource();
   const m = t.analysis.match;
-  assert(near(t.recorder.pausedMs, pausedFor, 300), `paused ${t.recorder.pausedMs} ms, where the test paused for about ${pausedFor} ms`);
+  // At least the 1.5 s the test waited; and no more than the test's own count of the pause, give or take how
+  // long the page took to answer each click.
+  assert(t.recorder.pausedMs >= 1400 && t.recorder.pausedMs <= pausedFor + 500, `paused ${t.recorder.pausedMs} ms, where the test waited 1500 ms and counted ${pausedFor} ms`);
   assert(near(t.analysis.tap.duration, t.wallS, 0.25), `tap ${t.analysis.tap.duration} s against ${t.wallS} s recorded`);
   assert(near(t.analysis.decoded?.duration, t.wallS, 0.25), `the file's sound is ${t.analysis.decoded?.duration} s against ${t.wallS} s recorded`);
   assert(Math.abs(m.endS) < 0.25, `ends ${m.endS} s against the tap`);
@@ -734,7 +737,7 @@ if (!hasModel) {
       state = await page.evaluate(() => {
         const c = window.captureBench.captions;
         const run = c.last;
-        return { text: c.text, shown: !document.querySelector("#captions").hidden, finals: run?.finals ?? [], interims: run?.interims ?? 0, bench: window.captureBench.state(), chip: document.querySelector("#speech").dataset.state };
+        return { text: c.text, shown: !document.querySelector("#captions").hidden, finals: run?.finals ?? [], interims: run?.interimStarts?.length ?? 0, bench: window.captureBench.state(), chip: document.querySelector("#speech").dataset.state };
       });
       if (state.text && seen.at(-1) !== state.text) seen.push(state.text);
       if (done(seen, state)) break;
@@ -788,6 +791,247 @@ if (!hasModel) {
       await setParams({ captions: false });
     }
   });
+
+  // --- Transcripts ----------------------------------------------------------------------------
+
+  // The cards are in the Live view.
+  await page.evaluate(() => window.captureBench.showView("live"));
+
+  // A take's saved transcript, with where the take's own 16 kHz copy has speech
+  // (the energy detector on the file's decoded sound: [[start, end]] in seconds),
+  // which is the truth the captions' times are checked against.
+  const transcriptOf = (id) =>
+    page.evaluate(async (id) => {
+      const [{ takeMedia, takeTranscripts }, { parseWav }, { createEnergyDetector, frameScores, speechRegions }] = await Promise.all([import("./page/takes.js"), import("./src/wav.js"), import("./src/speech/vad.js")]);
+      const { live } = await takeTranscripts(id);
+      const { pcm16k } = await takeMedia(id);
+      const detector = createEnergyDetector();
+      const speech = speechRegions(await frameScores(parseWav(await pcm16k.arrayBuffer()).channels[0], detector), detector.threshold, { bridge: 0.5 });
+      return { live, speech };
+    }, id);
+
+  // Records a media file to its end, with captions on.
+  async function fileTake(sample, params = {}) {
+    await setParams({ captions: true, ccModel: CAPTION_MODEL, ...params });
+    const before = await page.evaluate(() => window.captureBench.latest?.id ?? null);
+    await page.evaluate(() => window.captureBench.useSource("file"));
+    await page.select("#sample", sample);
+    await page.click("#record");
+    await page.waitForFunction((id) => window.captureBench.latest && window.captureBench.latest.id !== id && window.captureBench.state() === "idle", { timeout: 90000 }, before);
+    return page.evaluate(() => window.captureBench.latest);
+  }
+  const resetCaptions = async (params = {}) => {
+    await closeSource();
+    await page.select("#sample", "test/fixtures/fox.wav");
+    await page.evaluate(() => window.captureBench.useSource("camera"));
+    await setParams({ captions: false, ...params });
+  };
+  // The segmenter keeps up to 300 ms before speech starts and 200 ms after it ends, in 20 ms frames.
+  const startsWith = (segment, region) => segment.start >= region[0] - 0.45 && segment.start <= region[0] + 0.15;
+  const endsWith = (segment, region) => segment.end >= region[1] - 0.15 && segment.end <= region[1] + 0.45;
+
+  await test("transcript: a recorded file's two sentences, at the times they are spoken in the recording", async () => {
+    try {
+      const t = await fileTake("test/fixtures/two-sentences.wav");
+      const summary = t.transcripts?.live;
+      assert(summary, "the take has no transcript");
+      assert(!summary.segments, "the report holds the transcript's text (it belongs in the transcripts store)");
+      const { live, speech } = await transcriptOf(t.id);
+      const duration = t.analysis.file.probe.duration;
+      assert(live.segments.length === 2, `${live.segments.length} captions: ${live.segments.map((x) => x.transcript).join(" | ")}`);
+      assert(words(live.segments[0].transcript) === "speech recognition now works in firefox", live.segments[0].transcript);
+      assert(words(live.segments[1].transcript) === "everything runs locally on this computer", live.segments[1].transcript);
+      assert(speech.length === 2, `the recording's own sound has ${speech.length} stretches of speech`);
+      for (const [i, segment] of live.segments.entries()) {
+        assert(segment.start >= 0 && segment.end <= duration + 0.001 && segment.end > segment.start, `caption ${i + 1} at ${segment.start}-${segment.end} s in a ${duration} s file`);
+        assert(startsWith(segment, speech[i]) && endsWith(segment, speech[i]), `caption ${i + 1} at ${segment.start}-${segment.end} s, speech at ${speech[i].join("-")} s`);
+        assert(!segment.clipped, `caption ${i + 1} is marked cut`);
+      }
+      assert(live.clock.offsetFrom === "measured", `the offset was ${live.clock.offsetFrom} (match ${live.clock.waveScore})`);
+      assert(!live.incomplete && summary.stats.segments === 2 && summary.stats.words === 12, JSON.stringify(summary.stats));
+      assert(summary.stats.latencyS?.median > 0, "no caption delay measured");
+      const logged = await page.evaluate(() => [...document.querySelectorAll("#log li > b")].filter((b) => b.textContent.trim() === "transcript").length);
+      assert(logged >= 1, "no transcript event in the log");
+      return `${live.segments.map((x) => `${x.start}-${x.end} s`).join(", ")} against speech at ${speech.map((r) => r.join("-")).join(", ")} s · offset ${Math.round(live.clock.offsetS * 1000)} ms (${live.clock.offsetFrom}) · captions ${summary.stats.latencyS.median} s after each utterance, model ${summary.stats.rtf}× the speech`;
+    } finally {
+      await resetCaptions();
+    }
+  });
+
+  await test("transcript: on the take's card, as subtitles on the recording, rows that seek, and four downloads", async () => {
+    const take = await page.evaluate(() => window.captureBench.latest);
+    const { live } = await transcriptOf(take.id);
+    const card = await page.evaluate(async () => {
+      const video = document.querySelector("#latest .take-video");
+      const track = video.textTracks[0];
+      for (let i = 0; i < 50 && !track.cues?.length; i++) await new Promise((r) => setTimeout(r, 100));
+      const rows = [...document.querySelectorAll("#latest .take-transcript li")];
+      rows[1].click();
+      await new Promise((r) => setTimeout(r, 300));
+      const at = video.currentTime;
+      video.pause();
+      return {
+        rows: rows.map((r) => r.querySelector("span").textContent),
+        track: { kind: track.kind, mode: track.mode, cues: [...(track.cues ?? [])].map((c) => [c.startTime, c.endTime, c.text]) },
+        soughtTo: at,
+        buttons: [...document.querySelectorAll("#latest [data-download]")].map((b) => b.dataset.download),
+        metrics: [...document.querySelectorAll("#latest .metrics h4")].map((h) => h.textContent),
+      };
+    });
+    assert(card.rows.length === 2 && card.rows[1] === live.segments[1].transcript, `rows: ${card.rows.join(" | ")}`);
+    assert(card.track.kind === "captions" && card.track.mode === "showing", `the track is ${card.track.kind}, ${card.track.mode}`);
+    assert(card.track.cues.length >= 2, `${card.track.cues.length} cues`);
+    assert(near(card.track.cues[0][0], live.segments[0].start, 0.002) && near(card.track.cues.at(-1)[1], live.segments[1].end, 0.002), `cues at ${card.track.cues.map((c) => `${c[0]}-${c[1]}`).join(", ")}`);
+    assert(card.track.cues.map((c) => c[2].replace(/\n/g, " ")).join(" ") === live.segments.map((x) => x.transcript).join(" "), `the cues say: ${card.track.cues.map((c) => c[2]).join(" | ")}`);
+    assert(card.soughtTo >= live.segments[1].start - 0.01 && card.soughtTo < live.segments[1].end, `a click on row 2 went to ${card.soughtTo} s; it starts at ${live.segments[1].start} s`);
+    assert(card.metrics.includes("Captions"), `the card measures: ${card.metrics.join(", ")}`);
+    // The downloads, caught rather than saved, and read back.
+    await page.evaluate(() => {
+      window.testDownloads = [];
+      window.testClick = HTMLAnchorElement.prototype.click;
+      HTMLAnchorElement.prototype.click = function () {
+        window.testDownloads.push(fetch(this.href).then((r) => r.text()).then((text) => ({ name: this.download, text })));
+      };
+    });
+    try {
+      for (const kind of ["vtt", "srt", "txt", "transcript"]) {
+        assert(card.buttons.includes(kind), `the card offers ${card.buttons.join(", ")}`);
+        await page.click(`#latest [data-download="${kind}"]`);
+      }
+      const got = await page.evaluate(() => Promise.all(window.testDownloads));
+      const [vtt, srt, txt, json] = got;
+      assert(got.map((g) => g.name).join() === [`${take.name}.vtt`, `${take.name}.srt`, `${take.name}.txt`, `${take.name}-transcript.json`].join(), got.map((g) => g.name).join(", "));
+      assert(vtt.text.startsWith("WEBVTT\n\n1\n00:00:0") && vtt.text.includes(" --> ") && vtt.text.includes("Firefox."), vtt.text.slice(0, 120));
+      assert(/^1\n00:00:0\d,\d{3} --> 00:00:0\d,\d{3}\n/.test(srt.text), srt.text.slice(0, 80));
+      assert(txt.text.split("\n").filter(Boolean).length === 2 && txt.text.includes("] Speech recognition now works in Firefox."), txt.text);
+      const record = JSON.parse(json.text);
+      assert(record.format === "caption-bench-transcript/1" && record.segments.length === 2 && record.source.startsWith(take.name) && record.clock.startFrame > 0, json.text.slice(0, 200));
+      // Exported with the takes, and read back by Import.
+      const moved = await page.evaluate(async (id) => {
+        const { exportTakes, importTakes, takeTranscripts } = await import("./page/takes.js");
+        const text = await exportTakes();
+        const exported = JSON.parse(text).transcripts?.[id]?.live?.segments?.length ?? 0;
+        await importTakes(text);
+        return { exported, after: (await takeTranscripts(id)).live?.segments?.length ?? 0 };
+      }, take.id);
+      assert(moved.exported === 2 && moved.after === 2, `Export carried ${moved.exported} captions; after Import there are ${moved.after}`);
+      return `${card.track.cues.length} cues shown on the recording · .vtt, .srt, .txt and transcript.json downloaded · carried by Export and Import`;
+    } finally {
+      await page.evaluate(() => (HTMLAnchorElement.prototype.click = window.testClick));
+    }
+  });
+
+  if (webcodecs) {
+    await test("transcript: with the WebCodecs recorder's sound from the tap, the estimated offset agrees with the measured one", async () => {
+      try {
+        const t = await fileTake("test/fixtures/two-sentences.wav", { recorder: "webcodecs", wcFramePath: "fallback" });
+        const { live, speech } = await transcriptOf(t.id);
+        assert(t.recorder.webcodecs.audio.path === "AudioWorklet tap", `the sound came from ${t.recorder.webcodecs.audio.path}`);
+        assert(live.segments.length === 2 && speech.length === 2, `${live.segments.length} captions, ${speech.length} stretches of speech`);
+        for (const [i, segment] of live.segments.entries()) assert(startsWith(segment, speech[i]) && endsWith(segment, speech[i]), `caption ${i + 1} at ${segment.start}-${segment.end} s, speech at ${speech[i].join("-")} s`);
+        const c = live.clock;
+        assert(c.offsetFrom === "measured", `the offset was ${c.offsetFrom} (match ${c.waveScore})`);
+        assert(near(c.estimatedS, c.offsetS, 0.03), `estimated ${c.estimatedS} s, measured ${c.offsetS} s`);
+        return `measured ${Math.round(c.offsetS * 1000)} ms, estimated from the recorder's timestamps ${Math.round(c.estimatedS * 1000)} ms`;
+      } finally {
+        await resetCaptions({ recorder: "mediarecorder", wcFramePath: "auto" });
+      }
+    });
+  }
+
+  if (!isFirefox) {
+    await test("transcript: a paused take keeps what was said while it recorded, in order, on the recording's times (Chromium)", async () => {
+      // The fake microphone says its 2.7 s sentence every 4.83 s, so 8.5 s of recording holds a whole one
+      // whenever it starts: 8.5 s recorded, 3 s paused, 4 s recorded.
+      await setParams({ captions: true, ccModel: CAPTION_MODEL });
+      try {
+        const before = await page.evaluate(() => window.captureBench.latest?.id ?? null);
+        await page.evaluate(() => window.captureBench.useSource("camera"));
+        await page.click("#start");
+        await page.waitForFunction(() => window.captureBench.state() === "previewing", { timeout: 20000 });
+        await sleep(1500);
+        await page.click("#record");
+        await page.waitForFunction(() => window.captureBench.state() === "recording", { timeout: 20000 });
+        await sleep(8500);
+        await page.click("#pause");
+        await page.waitForFunction(() => window.captureBench.state() === "paused");
+        await sleep(3000);
+        await page.click("#pause");
+        await page.waitForFunction(() => window.captureBench.state() === "recording");
+        await sleep(4000);
+        await page.click("#stop");
+        await page.waitForFunction((id) => window.captureBench.latest && window.captureBench.latest.id !== id && window.captureBench.state() !== "analysing", { timeout: 90000 }, before);
+        const t = await page.evaluate(() => window.captureBench.latest);
+        const { live, speech } = await transcriptOf(t.id);
+        const duration = t.analysis.file.probe.duration;
+        const c = live.clock;
+        assert(c.gaps.length === 1, `${c.gaps.length} pauses on the take's clock`);
+        assert(live.segments.length >= 2, `${live.segments.length} captions: ${live.segments.map((x) => x.transcript).join(" | ")}`);
+        assert(!live.incomplete, "the last captions are missing");
+        const inSpeech = (segment) => speech.reduce((sum, [a, b]) => sum + Math.max(0, Math.min(segment.end, b) - Math.max(segment.start, a)), 0) / (segment.end - segment.start);
+        for (const [i, segment] of live.segments.entries()) {
+          assert(segment.start >= 0 && segment.end <= duration + 0.001 && segment.end > segment.start, `caption ${i + 1} at ${segment.start}-${segment.end} s in a ${duration} s file`);
+          if (i) assert(segment.start >= live.segments[i - 1].end - 0.001, `caption ${i + 1} starts at ${segment.start} s, before the last ended (${live.segments[i - 1].end} s)`);
+          // Said while recording: its middle isn't in the pause, on the context's clock.
+          const middle = (segment.frames[0] + segment.frames[1]) / 2;
+          assert(middle >= c.startFrame && middle < c.endFrame && !(middle >= c.gaps[0][0] && middle < c.gaps[0][1]), `caption ${i + 1} was said outside the take`);
+          // And where the recording has speech: all but its lead-in and tail.
+          assert(inSpeech(segment) > 0.6, `caption ${i + 1} at ${segment.start}-${segment.end} s: only ${Math.round(inSpeech(segment) * 100)}% of it is speech in the recording (speech at ${speech.map((r) => r.join("-")).join(", ")} s)`);
+          assert(/quick|brown|fox|jumps|lazy|dog/.test(words(segment.transcript)), `caption ${i + 1} says "${segment.transcript}"`);
+        }
+        // Whole sentences sit on their speech; cut ones say so.
+        const whole = live.segments.filter((x) => !x.clipped);
+        assert(whole.length >= 1, "every caption was cut");
+        for (const segment of whole) {
+          const region = speech.find(([a, b]) => segment.start < b && segment.end > a);
+          assert(region && startsWith(segment, region) && endsWith(segment, region), `"${segment.transcript}" at ${segment.start}-${segment.end} s, speech at ${region?.join("-")} s`);
+          assert(words(segment.transcript) === "the quick brown fox jumps over the lazy dog", `an uncut caption says "${segment.transcript}"`);
+        }
+        const paused = (c.gaps[0][1] - c.gaps[0][0]) / c.rate;
+        assert(near(paused * 1000, t.recorder.pausedMs, 150), `the tap paused ${paused.toFixed(3)} s, the recorder ${t.recorder.pausedMs} ms`);
+        return `${live.segments.length} captions (${live.segments.filter((x) => x.clipped).length} cut at the take's edges) in a ${duration.toFixed(1)} s recording with ${paused.toFixed(2)} s paused · ${live.segments.map((x) => `${x.start}-${x.end}${x.clipped ? "✂" : ""}`).join(", ")} s · offset ${Math.round(c.offsetS * 1000)} ms (${c.offsetFrom}, match ${c.waveScore})`;
+      } finally {
+        await closeSource();
+        await setParams({ captions: false });
+      }
+    });
+  }
+
+  const hasWords = await page.evaluate(async () => (await (await import("./page/captions.js")).localModels()).includes("onnx-community/whisper-tiny.en_timestamped"));
+  if (!hasWords) {
+    console.log("SKIP  transcript: word times (npm run download-model whisper-tiny.en-timestamped)");
+  } else {
+    await test("transcript: word times from Whisper sit inside their captions, and subtitles break on them", async () => {
+      try {
+        const t = await fileTake("test/fixtures/two-sentences.wav", { ccWords: "whisper" });
+        const { live, speech } = await transcriptOf(t.id);
+        assert(live.engine.wordsFrom === "whisper", `word times came from ${live.engine.wordsFrom}`);
+        assert(live.segments.length === 2, `${live.segments.length} captions`);
+        for (const [i, segment] of live.segments.entries()) {
+          const w = segment.words;
+          assert(w?.length === 6, `caption ${i + 1} has ${w?.length} timed words: ${w?.map((x) => x.word).join(" ")}`);
+          assert(w.map((x) => x.word).join(" ") === segment.transcript, `words "${w.map((x) => x.word).join(" ")}" for "${segment.transcript}"`);
+          for (const [n, x] of w.entries()) {
+            assert(x.start >= segment.start - 0.02 && x.end <= segment.end + 0.02 && x.end >= x.start, `"${x.word}" at ${x.start}-${x.end} s in a caption at ${segment.start}-${segment.end} s`);
+            if (n) assert(x.start >= w[n - 1].start, `"${x.word}" starts before the word before it`);
+          }
+          // The first word starts after the caption's lead-in, near where the speech does. (How near is the
+          // model's doing: tiny.en's word times run late by up to half a second; base.en's are within 0.25 s.)
+          assert(w[0].start >= speech[i][0] - 0.1 && w[0].start <= speech[i][0] + 0.7, `"${w[0].word}" at ${w[0].start} s, speech from ${speech[i][0]} s`);
+        }
+        const lags = live.segments.map((x, i) => Math.round((x.words[0].start - speech[i][0]) * 1000));
+        const cues = await page.evaluate(async (id) => {
+          const [{ takeTranscripts }, { toCues }] = await Promise.all([import("./page/takes.js"), import("./src/captions/subtitles.js")]);
+          return toCues((await takeTranscripts(id)).live.segments, { maxChars: 20 }).map((c) => [c.start, c.end, c.text]);
+        }, t.id);
+        const starts = live.segments.flatMap((x) => x.words.map((w) => w.start));
+        assert(cues.length >= 4 && cues.every((c) => starts.includes(c[0])), `cues at ${cues.map((c) => c[0]).join(", ")} s; words start at ${starts.join(", ")} s`);
+        return `first words ${lags.join(" and ")} ms after the speech starts · ${live.segments.map((x) => x.words.map((w) => `${w.word}@${w.start}`).join(" ")).join(" · ")}`;
+      } finally {
+        await resetCaptions({ ccWords: "off" });
+      }
+    });
+  }
 }
 
 await test("Browser view: the capability report", async () => {

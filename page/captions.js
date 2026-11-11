@@ -1,6 +1,8 @@
 // Live captions on the bench: runs the speech engine on the open source's
-// audio tap, shows what it hears over the preview, and reports the model's
-// state in the app bar's Captions chip.
+// audio tap, shows what it hears over the preview and in the transcript
+// under it, reports the model's state in the app bar's Captions chip, and
+// makes each take's transcript: the captions said while it recorded, placed
+// on the saved file's timeline.
 //
 // The engine (src/speech/) is shared by the whole page and loads its model
 // once; the settings that pick the model are engine-wide, so a change to one
@@ -8,13 +10,15 @@
 
 import { MODELS_INDEX_URL } from "../src/deps.js";
 import { createTapFeed } from "../src/captions/tap-feed.js";
+import { TakeTimeline, captionStats, fileOffset, placeSegments } from "../src/captions/timeline.js";
 import { config, configure, engine } from "../src/speech/core.js";
-import { modelDir, resolve } from "../src/speech/registry.js";
+import { modelDir, resolve, timestampedFor } from "../src/speech/registry.js";
 import { Transcriber } from "../src/speech/transcriber.js";
 import { clock, setChip } from "./bench.js";
 
 // A final caption stays up this long after it arrives, unless the next one replaces it.
 const LINGER_MS = 4000;
+export const TRANSCRIPT_FORMAT = "caption-bench-transcript/1";
 
 // The folders under models/ on this server, from models/index.json: [] when
 // there is no list (a static host that publishes none).
@@ -35,19 +39,19 @@ export function pickModel(choice, local) {
   return local.includes(modelDir(resolve("whisper-base.en"))) ? "whisper-base.en" : "whisper-tiny.en";
 }
 
-// log: the bench's events log; onSegment(segment, run) is called with every
-// interim and final segment, run being what start() resolved to.
-export function createCaptions({ overlay, chip, log, onSegment = () => {}, onError = () => {} }) {
+// overlay: the text over the preview; list: the transcript's <ol>; chip: the
+// app bar's; log: the bench's events log.
+export function createCaptions({ overlay, list, chip, log }) {
   const finalEl = overlay.querySelector(".caption-final");
   const interimEl = overlay.querySelector(".caption-interim");
-  let run = null; // { transcriber, feed, settings, model, finals, interims }
+  let run = null; // { transcriber, feed, settings, model, finals, interimStarts }
   let last = null; // the latest run, kept after it ends
   let loaded = null; // the engine-wide settings the engine loaded with, as JSON
   let lingering = 0;
   let shownFinal = null; // the id of the final segment on screen
   let shownInterim = null;
 
-  // --- The overlay ---------------------------------------------------------------------------
+  // --- The overlay and the transcript ----------------------------------------------------
 
   function show() {
     overlay.hidden = !finalEl.textContent && !interimEl.textContent;
@@ -83,6 +87,23 @@ export function createCaptions({ overlay, chip, log, onSegment = () => {}, onErr
     show();
   }
 
+  // One row per utterance, by its id: an interim row becomes the final one, or goes.
+  function listSegment(segment) {
+    let row = list.querySelector(`li[data-id="${segment.id}"]`);
+    if (segment.isFinal && !segment.transcript) return row?.remove();
+    const atEnd = list.scrollTop + list.clientHeight >= list.scrollHeight - 8;
+    if (!row) {
+      row = document.createElement("li");
+      row.dataset.id = segment.id;
+      row.append(document.createElement("time"), document.createElement("span"));
+      list.append(row);
+    }
+    row.classList.toggle("interim", !segment.isFinal);
+    row.querySelector("time").textContent = `${clock(segment.start)}–${clock(segment.end)}`;
+    row.querySelector("span").textContent = segment.transcript;
+    if (atEnd) list.scrollTop = list.scrollHeight;
+  }
+
   // --- The chip -------------------------------------------------------------------------------
 
   const label = () => resolve(config.model, { kind: "asr" })?.label ?? config.model;
@@ -98,6 +119,7 @@ export function createCaptions({ overlay, chip, log, onSegment = () => {}, onErr
         got += f.loaded;
         all += f.total;
       }
+      // A percentage once the model's own files (megabytes) have started, not for the small configs.
       const part = all > 1e6 ? ` · ${Math.round((got / all) * 100)}%` : "";
       return setChip(chip, "loading", `${label()}${part}`, all ? `Loading the speech model: ${(got / 1e6).toFixed(1)} of ${(all / 1e6).toFixed(1)} MB` : "Loading the speech model");
     }
@@ -106,7 +128,9 @@ export function createCaptions({ overlay, chip, log, onSegment = () => {}, onErr
       const i = engine.info;
       const device = i.device === "webgpu" ? "WebGPU" : `WebAssembly, ${i.threads} thread${i.threads === 1 ? "" : "s"}`;
       const from = i.from === "same-origin" ? "from this server" : "from the Hugging Face hub (kept by the browser)";
-      const notes = [i.fallback, i.threads === 1 && !i.crossOriginIsolated ? "one thread: the page isn't cross-origin isolated" : ""].filter(Boolean).join(". ");
+      const notes = [i.fallback, i.threads === 1 && !i.crossOriginIsolated ? "one thread: the page isn't cross-origin isolated" : "", i.wordsFrom ? `word times from ${i.wordsFrom === "align" ? "forced alignment" : i.wordsFrom === "frames" ? "the model's frames" : "Whisper's attention"}` : ""]
+        .filter(Boolean)
+        .join(". ");
       return setChip(chip, i.fallback ? "warn" : "ready", `${label()} · ${i.device === "webgpu" ? "WebGPU" : `${i.threads}×`}`, `${label()} on ${device}, ${from}${notes ? `. ${notes}` : ""}`);
     }
     setChip(chip, "unloaded", "Captions", "The speech model loads when a source opens");
@@ -117,7 +141,7 @@ export function createCaptions({ overlay, chip, log, onSegment = () => {}, onErr
       if (engine.state === "loading") log.add("life", "model", `loading ${label()} (${config.device === "webgpu" ? "WebGPU" : "WebAssembly"})`);
       if (engine.state === "ready") {
         const i = engine.info;
-        log.add("result", "model", `${label()} ready in ${(i.loadMs / 1000).toFixed(1)} s · ${i.device} · ${i.dtype && typeof i.dtype === "object" ? Object.values(i.dtype).join("+") : i.dtype} · ${i.threads} thread${i.threads === 1 ? "" : "s"} · ${i.from === "same-origin" ? "this server" : "Hugging Face hub"}${i.fallback ? ` · ${i.fallback}` : ""}`);
+        log.add("result", "model", `${label()} ready in ${(i.loadMs / 1000).toFixed(1)} s · ${i.device} · ${i.dtype && typeof i.dtype === "object" ? Object.values(i.dtype).join("+") : i.dtype} · ${i.threads} thread${i.threads === 1 ? "" : "s"} · ${i.from === "same-origin" ? "this server" : "Hugging Face hub"}${i.wordsFrom ? ` · word times: ${i.wordsFrom}` : ""}${i.fallback ? ` · ${i.fallback}` : ""}`);
       }
       if (engine.state === "error") log.add("error", "model", engine.error ?? "the speech engine failed to load");
       lastState = engine.state;
@@ -135,8 +159,8 @@ export function createCaptions({ overlay, chip, log, onSegment = () => {}, onErr
   // --- Runs ------------------------------------------------------------------------------------
 
   // Starts captioning a tap. settings: the Captions tab's values. Resolves to
-  // the run ({ feed, model, settings, finals }) once audio is arriving, or to
-  // null when captions are off or couldn't start (the log and onError say why).
+  // the run once audio is arriving, or to null when captions are off or
+  // couldn't start (the log says why).
   async function start(tap, settings) {
     stop();
     wanted = Boolean(settings.captions && tap);
@@ -144,6 +168,7 @@ export function createCaptions({ overlay, chip, log, onSegment = () => {}, onErr
       showEngine();
       return null;
     }
+    list.replaceChildren();
     const local = await localModels();
     const model = pickModel(settings.ccModel, local);
     let vad = settings.ccVad;
@@ -151,12 +176,15 @@ export function createCaptions({ overlay, chip, log, onSegment = () => {}, onErr
       log.add("error", "captions", "Silero VAD isn't on this server (npm run download-model silero-vad): using the energy detector");
       vad = "energy";
     }
-    // The model and where it runs are fixed once the engine loads: a change restarts it.
-    const engineWide = JSON.stringify({ model, device: settings.ccDevice, local: local.includes(modelDir(resolve(model))) });
+    const words = settings.ccWords ?? "off";
+    // The model, where it runs and how words are timed are fixed once the engine loads: a change restarts it.
+    const isLocal = (id, kind) => local.includes(modelDir(resolve(id, { kind })));
+    const loads = words === "whisper" ? (timestampedFor(model)?.id ?? model) : model;
+    const engineWide = JSON.stringify({ model, device: settings.ccDevice, words, local: [isLocal(loads, "asr"), words === "align" && isLocal(config.alignmentModel, "alignment")] });
     if (loaded !== engineWide && engine.state !== "unloaded") engine.reset();
     loaded = engineWide;
     configure({ localModels: local, vad, vadLevel: settings.ccVadLevel ?? 2, vadThreshold: settings.ccVadThreshold ?? 0.5 });
-    if (engine.state === "unloaded") configure({ model, device: settings.ccDevice });
+    if (engine.state === "unloaded") configure({ model, device: settings.ccDevice, words });
 
     const transcriber = new Transcriber({
       lang: "en-US",
@@ -165,30 +193,33 @@ export function createCaptions({ overlay, chip, log, onSegment = () => {}, onErr
       silenceMs: settings.ccSilenceMs ?? 800,
       maxSegmentMs: settings.ccMaxSegmentMs ?? 20000,
     });
-    const mine = { transcriber, feed: createTapFeed(tap), model, settings: { ...settings, ccVad: vad }, finals: [], interims: 0 };
+    const mine = { transcriber, feed: createTapFeed(tap), model, settings: { ...settings, ccVad: vad, ccModel: model }, finals: [], interimStarts: [] };
     run = last = mine;
     transcriber.onsegment = (event) => {
       if (run !== mine) return;
-      const { id, isFinal, transcript, confidence, start: from, end, speaker, words, latency, ms } = event;
-      const segment = { id, isFinal, transcript, confidence, start: from, end, speaker, ...(words && { words }), ...(latency != null && { latency }), ...(ms != null && { ms }) };
+      const { id, isFinal, transcript, confidence, start: from, end, speaker, words: timed, latency, ms, cut } = event;
+      const segment = { id, isFinal, transcript, confidence, start: from, end, speaker, ...(timed && { words: timed }), ...(latency != null && { latency }), ...(ms != null && { ms }), ...(cut && { cut }) };
       if (isFinal && transcript) {
         mine.finals.push(segment);
         log.add("result", "caption", `[${clock(from)}–${clock(end)}] ${transcript}${latency != null ? ` · ${latency.toFixed(2)} s after it ended` : ""}`);
       } else if (!isFinal) {
-        mine.interims++;
+        mine.interimStarts.push(from);
       }
       showSegment(segment);
-      onSegment(segment, mine);
+      listSegment(segment);
     };
     transcriber.onerror = (event) => {
       if (run !== mine) return;
       log.add("error", "captions", `${event.error}: ${event.message}`);
-      onError(event);
     };
     transcriber.onend = () => {
       if (run === mine) run = null;
     };
-    log.add("call", "captions", `${resolve(model)?.label ?? model} · ${settings.ccDevice} · ${vad} · a pause of ${settings.ccSilenceMs ?? 800} ms ends an utterance${settings.ccInterim ? ` · interim text every ${settings.ccInterimIntervalMs ?? 500} ms` : " · no interim text"}`);
+    log.add(
+      "call",
+      "captions",
+      `${resolve(model)?.label ?? model} · ${settings.ccDevice} · ${vad} · a pause of ${settings.ccSilenceMs ?? 800} ms ends an utterance${settings.ccInterim ? ` · interim text every ${settings.ccInterimIntervalMs ?? 500} ms` : " · no interim text"}${words !== "off" ? ` · word times: ${words}` : ""}`,
+    );
     showEngine();
     try {
       await transcriber.start(mine.feed);
@@ -200,19 +231,76 @@ export function createCaptions({ overlay, chip, log, onSegment = () => {}, onErr
     return run === mine ? mine : null;
   }
 
-  // Ends the run at once (the source is closing): what isn't delivered yet is dropped.
+  // Ends the run at once (the source is closing): what isn't delivered yet is
+  // dropped. The transcript under the preview stays, to read.
   function stop() {
     const ending = run;
     run = null;
     ending?.transcriber.abort();
     clearOverlay();
+    for (const row of list.querySelectorAll("li.interim")) row.remove();
+  }
+
+  // A take starts, pauses, resumes or stops at this context frame: the
+  // utterance in progress is cut exactly there, so no caption spans it.
+  // Resolves, once every caption up to the frame has been delivered, to true;
+  // or to false after waitMs (the model is still working, or the audio never
+  // reached the frame).
+  function boundary(frame, { waitMs = 30000 } = {}) {
+    const mine = run;
+    const feedClock = mine?.feed.clock;
+    if (!feedClock || frame == null) return Promise.resolve(true);
+    return new Promise((done) => {
+      let cut = false;
+      const giveUp = setTimeout(() => done(false), waitMs);
+      const doCut = () => {
+        if (cut) return;
+        cut = true;
+        mine.transcriber.cut().then(
+          () => (clearTimeout(giveUp), done(true)),
+          () => (clearTimeout(giveUp), done(false)),
+        );
+      };
+      // If the audio stops arriving (a suspended context), cut where it got to.
+      const now = feedClock.at(frame, doCut);
+      setTimeout(now, 1500);
+    });
+  }
+
+  // The transcript of the take that just ended, from the run in progress:
+  // the captions said while it recorded, on the saved file's timeline. tap:
+  // PcmTap.finish()'s result; analysis and recorder: the take's. complete:
+  // what boundary() resolved to at Stop. Null when captions weren't running.
+  function takeTranscript({ takeId, tap, analysis, recorder, complete = true }) {
+    const mine = run ?? last;
+    const feedClock = mine?.feed.clock;
+    if (!mine || !tap || feedClock?.firstFrame == null) return null;
+    const timeline = new TakeTimeline(tap);
+    const offset = fileOffset({ analysis, recorder, timeline });
+    const duration = analysis?.file?.probe?.duration ?? Infinity;
+    const segments = placeSegments(mine.finals, feedClock, timeline, { offsetS: offset.offsetS, duration });
+    const interims = mine.interimStarts.filter((s) => timeline.recorded(feedClock.frameAt(s))).length;
+    const i = engine.info ?? {};
+    const s = mine.settings;
+    return {
+      format: TRANSCRIPT_FORMAT,
+      takeId,
+      kind: "live",
+      createdAt: Date.now(),
+      engine: { model: i.model ?? modelDir(resolve(mine.model)), label: resolve(mine.model)?.label ?? mine.model, dtype: i.dtype ?? null, device: i.device ?? null, threads: i.threads ?? null, crossOriginIsolated: i.crossOriginIsolated ?? null, fallback: i.fallback ?? null, wordsFrom: i.wordsFrom ?? null, from: i.from ?? null },
+      settings: { lang: "en-US", model: s.ccModel, device: s.ccDevice, vad: s.ccVad, vadLevel: s.ccVadLevel, vadThreshold: s.ccVadThreshold, silenceMs: s.ccSilenceMs, maxSegmentMs: s.ccMaxSegmentMs, interimResults: s.ccInterim, interimIntervalMs: s.ccInterimIntervalMs, words: s.ccWords ?? "off" },
+      clock: { rate: timeline.rate, firstFedFrame: feedClock.firstFrame, startFrame: timeline.startFrame, endFrame: timeline.endFrame, gaps: timeline.gaps, lostFrames: feedClock.lostFrames, ...offset },
+      segments,
+      stats: { ...captionStats(segments), interims, clipped: segments.filter((x) => x.clipped).length },
+      ...(complete ? {} : { incomplete: true }),
+    };
   }
 
   return {
     start,
     stop,
-    // Ends the utterance in progress here; resolves once every caption up to now is delivered.
-    cut: () => run?.transcriber.cut() ?? Promise.resolve(),
+    boundary,
+    takeTranscript,
     get run() {
       return run;
     },

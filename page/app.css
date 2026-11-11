@@ -2490,3 +2490,91 @@ body[data-source="file"] .captions {
 .captions .caption-interim {
   color: #c9d3de;
 }
+
+/* The transcript: under the preview while a source is open (every utterance
+   heard, an interim row in a lighter colour until it's final), and on a
+   take's card (what was said in the take, on the file's times; the row being
+   said is marked as it plays, and a click goes there). */
+.transcript,
+.take-transcript {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.transcript:has(.transcript-list:empty) {
+  display: none;
+}
+
+.transcript h3,
+.take-transcript h4 {
+  color: var(--ink-2);
+  font-size: 0.92em;
+  font-weight: 650;
+}
+
+.transcript-list {
+  display: grid;
+  gap: 2px;
+  max-height: 11.5em;
+  margin: 0;
+  padding: 6px 8px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  list-style: none;
+}
+
+.take-transcript .transcript-list {
+  max-height: 16em;
+}
+
+.transcript-list li {
+  display: grid;
+  grid-template-columns: 9.5em minmax(0, 1fr);
+  gap: 8px;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.transcript-list time {
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 0.92em;
+  white-space: nowrap;
+}
+
+.transcript-list li.interim span {
+  color: var(--ink-3);
+}
+
+.transcript-list li.clipped time::after {
+  content: " ✂";
+}
+
+.transcript-list.seeks li {
+  cursor: pointer;
+}
+
+.transcript-list.seeks li:hover {
+  background: var(--sunken);
+}
+
+.transcript-list li.now {
+  background: var(--accent-soft);
+}
+
+@media (pointer: coarse) {
+  .transcript-list.seeks li {
+    min-height: 44px;
+    align-items: center;
+  }
+}
+
+@media (max-width: 560px) {
+  .transcript-list li {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+}

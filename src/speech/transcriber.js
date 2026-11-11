@@ -40,13 +40,15 @@ const EVENTS = ["start", "segment", "vad", "error", "end"];
 // Final segments also carry latency: seconds from the moment the utterance
 // closed (silenceMs of quiet after the speech, maxSegmentMs, or a cut) to
 // this segment's delivery, which includes waiting behind earlier utterances.
+// cut is true on a final segment that cut() ended while the speech went on.
 // speaker is always null here: speaker labels are a later stage.
 export class SegmentEvent extends Event {
-  constructor(type, { id, isFinal, transcript, confidence, start, end, speaker, words, latency }) {
+  constructor(type, { id, isFinal, transcript, confidence, start, end, speaker, words, latency, cut }) {
     super(type);
     Object.assign(this, { id, isFinal, transcript, confidence, start, end, speaker });
     if (words) this.words = words;
     if (latency != null) this.latency = latency;
+    if (cut) this.cut = true;
   }
 }
 
@@ -203,7 +205,7 @@ class LiveRun {
         },
         speechStart: (utterance, startSample) => this.speechStart(utterance, startSample),
         progress: (utterance, ms, getAudio) => this.speechProgress(utterance, ms, getAudio),
-        segment: (utterance, audio, startSample) => this.utteranceEnd(utterance, audio, startSample),
+        segment: (utterance, audio, startSample, how) => this.utteranceEnd(utterance, audio, startSample, how),
         discard: (utterance) => this.discard(utterance),
       },
       { ...this.options, detector },
@@ -276,12 +278,15 @@ class LiveRun {
       .finally(() => (this.interimBusy = false));
   }
 
-  utteranceEnd(utterance, audio, startSample) {
+  utteranceEnd(utterance, audio, startSample, { cut = false } = {}) {
     const active =
       this.active?.utterance === utterance
         ? this.active
         : { utterance, id: this.nextId(), start: seconds(startSample), shown: false };
+    active.cut = cut;
     this.active = null;
+    // An interim still waiting is out of date now: the whole utterance is about to be transcribed.
+    engine.cancel(this.key, `${this.key}-interim`);
     this.queueDelivery(this.transcribeUtterance(active, audio), performance.now());
   }
 
@@ -296,7 +301,8 @@ class LiveRun {
   // Resolves to the final segments for one utterance.
   async transcribeUtterance(utterance, audio) {
     const end = utterance.start + seconds(audio.length); // before the buffer moves to the worker
-    const r = await engine.transcribe(audio, this.jobOptions({ words: true }), { session: this.key });
+    // Ahead of any interim: a finished utterance's caption matters more than a guess at the next one.
+    const r = await engine.transcribe(audio, this.jobOptions({ words: true }), { session: this.key, priority: true });
     const transcript = r ? cleanTranscript(r.text, r.confidence, this.options) : "";
     if (!transcript) return utterance.shown ? [this.withdrawal(utterance)] : [];
     return [
@@ -310,6 +316,7 @@ class LiveRun {
         speaker: null,
         words: shiftWords(r.words, utterance.start),
         ms: r.ms,
+        cut: utterance.cut,
       },
     ];
   }
@@ -352,13 +359,19 @@ class LiveRun {
     this.emit(event);
   }
 
+  // Resolves once everything heard up to the cut has been delivered. Speech
+  // that comes after it isn't waited for: on a machine where the model can't
+  // keep up, that wait would never end.
   async cut() {
     if (this.state !== "capturing") return;
     const cutting = this.segmenter.cut();
     // An asynchronous detector (Silero) still has frames to decide; the
-    // utterance ends once it has.
-    if (cutting) this.queueDelivery(cutting.then(() => []));
-    while (this.pending.size) await Promise.allSettled([...this.pending]);
+    // utterance ends once it has, and is queued then.
+    if (cutting) {
+      this.queueDelivery(cutting.then(() => []));
+      await cutting.catch(() => {});
+    }
+    await this.delivery;
   }
 
   stop() {

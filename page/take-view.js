@@ -145,6 +145,23 @@ export function metricGroups(t) {
       ],
     ]);
   }
+  // The second pass over the finished recording, when one was made.
+  const final = t.transcripts?.final;
+  if (final) {
+    const e = final.engine ?? {};
+    const s = final.stats ?? {};
+    const w = s.againstLive;
+    groups.push([
+      "Second pass",
+      [
+        ["Speech model", `${esc(e.label ?? e.model ?? "?")} · ${e.device === "webgpu" ? "WebGPU" : `WebAssembly, ${num(e.threads)} thread${e.threads === 1 ? "" : "s"}`} · ${e.from === "same-origin" ? "this server" : "Hugging Face hub"}`, e.fallback ? "bad" : "", "m-cc-model"],
+        ["Captions · words", `${num(s.segments)} · ${num(s.words)}${s.dropped ? ` (${num(s.dropped)} stretch${s.dropped === 1 ? "" : "es"} of sound dropped as not speech)` : ""}`, "", "m-fp-segments"],
+        ["Took · model time against speech", `${sec(s.tookS, 1)} · ${s.rtf == null ? "—" : `${s.rtf.toFixed(2)}×`}`, "", "m-fp-time"],
+        ["Live captions against this pass", w ? (w.words ? `${num(w.errors)} of ${num(w.words)} words differ (${pct(w.rate)})` : "this pass has no words") : "no live captions to compare", "", "m-fp-wer"],
+        ["Word times", e.wordsFrom ? (e.wordsFrom === "align" ? "forced alignment" : e.wordsFrom === "frames" ? "the model's frames" : "Whisper's attention") : "estimated from the text", "", "ccFinalWords"],
+      ],
+    ]);
+  }
   if (videoTrack || a.video) {
     groups.push([
       "Video",
@@ -257,9 +274,12 @@ export function cardHTML(t, { deletable = false } = {}) {
   const kinds = new Set((t.analysis?.file?.probe?.tracks ?? []).map((x) => x.type));
   const solo = (kind, title) =>
     has.file && kinds.has("audio") && kinds.has("video") ? `<button type="button" class="btn sm" data-download="${kind}" title="${esc(title)}">${icon("download")}${kind} only</button>` : "";
-  // Subtitles and the transcript, when the take has captions with something in them.
-  const spoken = (t.transcripts?.[t.transcripts?.chosen] ?? t.transcripts?.live)?.stats?.segments > 0;
-  const textButton = (key, label, title) => (spoken ? `<button type="button" class="btn sm" data-download="${key}" title="${esc(title)}">${icon("download")}${label}</button>` : "");
+  // Subtitles and the transcript, from the transcript chosen: the live captions' or the second pass's.
+  const tr = t.transcripts ?? {};
+  const chosen = tr[tr.chosen] ? tr.chosen : tr.final ? "final" : tr.live ? "live" : null;
+  const spoken = tr[chosen]?.stats?.segments > 0;
+  const pick = (kind, label) => `<label><input type="radio" name="transcript-${esc(t.id)}" value="${kind}"${chosen === kind ? " checked" : ""} /><span>${label}</span></label>`;
+  const textButton = (key, label, title) => (spoken ? `<button type="button" class="btn sm" data-download="${key}" title="${esc(title)}">${icon("download")}<span class="label">${label}</span></button>` : "");
   return `
     <article class="take" data-id="${esc(t.id)}">
       <header class="block-head take-head">
@@ -273,6 +293,7 @@ export function cardHTML(t, { deletable = false } = {}) {
           ${fileButton("tap", "tap.wav", "The lossless tap, at the context's rate, every channel")}
           ${fileButton("pcm16k", "16k.wav", "The recording's audio as 16 kHz mono, ready for transcription")}
           ${has.file ? textButton("subtitled", "with subtitles", "The recording with its subtitles written into it as a track, its packets copied as they are") : ""}
+          ${has.file && kinds.has("video") ? textButton("burned", "captions burned in", "The recording with its subtitles drawn into the picture, which is encoded again") : ""}
           ${textButton("vtt", ".vtt", "Subtitles as WebVTT, timed on the recording")}
           ${textButton("srt", ".srt", "Subtitles as SubRip")}
           ${textButton("txt", ".txt", "The transcript as text, an utterance a line, with its times")}
@@ -291,8 +312,19 @@ export function cardHTML(t, { deletable = false } = {}) {
           : ""
       }
       ${
-        t.transcripts?.live || t.transcripts?.final
-          ? `<section class="take-transcript"><h4 data-explain="take-transcript">Transcript</h4>${spoken ? `<ol class="transcript-list"></ol>` : `<p class="hint">Nothing was heard as speech while this take recorded.</p>`}</section>`
+        chosen || has.pcm16k
+          ? `<section class="take-transcript">
+              <header class="transcript-head">
+                <h4 data-explain="take-transcript">Transcript</h4>
+                ${tr.live && tr.final ? `<fieldset class="seg transcript-pick"><legend class="sr-only">Which transcript</legend>${pick("live", "Live")}${pick("final", "Second pass")}</fieldset>` : chosen ? `<span class="meta">${chosen === "final" ? "second pass" : "live captions"}</span>` : ""}
+                ${has.pcm16k ? `<button type="button" class="btn sm" data-action="second-pass" title="Transcribe the finished recording from its 16 kHz copy, with no clock to keep up with">${icon("reload")}<span class="label">${tr.final ? "Transcribe again" : chosen ? "Second pass" : "Transcribe the recording"}</span></button>` : ""}
+              </header>
+              ${
+                spoken
+                  ? `<ol class="transcript-list"></ol>`
+                  : `<p class="hint">${chosen === "final" ? "The second pass found no speech in this recording." : chosen ? "Nothing was heard as speech while this take recorded." : "This take has no transcript. <b>Transcribe the recording</b> makes one from its sound."}</p>`
+              }
+            </section>`
           : ""
       }
       <div class="metrics">${metricGroups(t)

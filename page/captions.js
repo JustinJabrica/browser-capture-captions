@@ -1,8 +1,9 @@
 // Live captions on the bench: runs the speech engine on the open source's
 // audio tap, shows what it hears over the preview and in the transcript
 // under it, reports the model's state in the app bar's Captions chip, and
-// makes each take's transcript: the captions said while it recorded, placed
-// on the saved file's timeline.
+// makes each take's transcripts: the captions said while it recorded, placed
+// on the saved file's timeline; and, when asked, a second pass over the
+// finished recording.
 //
 // The engine (src/speech/) is shared by the whole page and loads its model
 // once; the settings that pick the model are engine-wide, so a change to one
@@ -11,9 +12,12 @@
 import { MODELS_INDEX_URL } from "../src/deps.js";
 import { createTapFeed } from "../src/captions/tap-feed.js";
 import { TakeTimeline, captionStats, fileOffset, placeSegments } from "../src/captions/timeline.js";
-import { config, configure, engine } from "../src/speech/core.js";
+import { transcriptErrors } from "../src/captions/wer.js";
+import { config, configure, createEngine, engine } from "../src/speech/core.js";
+import { runFilePass } from "../src/speech/file-pass.js";
 import { modelDir, resolve, timestampedFor } from "../src/speech/registry.js";
 import { Transcriber } from "../src/speech/transcriber.js";
+import { parseWav } from "../src/wav.js";
 import { clock, setChip } from "./bench.js";
 
 // A final caption stays up this long after it arrives, unless the next one replaces it.
@@ -296,11 +300,91 @@ export function createCaptions({ overlay, list, chip, log }) {
     };
   }
 
+  // --- The second pass ------------------------------------------------------------------------
+
+  // An engine of its own, so the pass neither waits behind live captions nor
+  // holds them up, and can use another model. Kept between passes; a change
+  // of model, device or word times replaces it.
+  const second = { engine: null, signature: null, runs: 0 };
+
+  // Transcribes a finished take again, from its 16 kHz copy: the detector
+  // finds the speech in the whole of it, and each stretch is transcribed
+  // with no clock to keep up with. take: its report; pcm16k: the Blob;
+  // settings: the Captions tab's; live: the take's live transcript, to
+  // compare with, or null. onProgress({ phase, done, total }).
+  // Resolves to a transcript record (kind "final"), on the file's timeline.
+  async function secondPass({ take, pcm16k, settings, live = null, onProgress = () => {} }) {
+    const started = performance.now();
+    const local = await localModels();
+    const model = settings.ccFinalModel && settings.ccFinalModel !== "same" ? settings.ccFinalModel : pickModel(settings.ccModel, local);
+    const words = settings.ccFinalWords ?? "off";
+    let vad = settings.ccVad;
+    if (vad === "silero-vad" && !local.includes(modelDir(resolve("silero-vad")))) vad = "energy";
+    const signature = JSON.stringify({ model, device: settings.ccDevice, words, local });
+    if (second.signature !== signature) {
+      second.engine?.reset();
+      const made = createEngine({ model, device: settings.ccDevice, words, localModels: local });
+      made.addEventListener("statechange", () => {
+        if (made.state === "loading") log.add("life", "model", `loading ${resolve(model)?.label ?? model} for the second pass`);
+        if (made.state === "error") log.add("error", "model", made.error ?? "the second pass's engine failed to load");
+      });
+      Object.assign(second, { engine: made, signature });
+    }
+    const eng = second.engine;
+    const audio = parseWav(await pcm16k.arrayBuffer()).channels[0];
+    const samples = audio.length;
+    const duration = samples / 16000;
+    onProgress({ phase: "loading", done: 0, total: 1 });
+    await eng.load();
+    const session = `second-pass-${++second.runs}`;
+    const fileId = eng.openFile(audio); // the audio moves to the worker
+    let pass;
+    try {
+      pass = await runFilePass(
+        { duration },
+        {
+          speech: async () => (await eng.speech({ fileId, start: 0, end: samples }, { vad, vadLevel: settings.ccVadLevel ?? 2, vadThreshold: settings.ccVadThreshold ?? 0.5 }, { session }))?.regions ?? [],
+          transcribe: (from, to) => eng.transcribe({ fileId, start: from, end: to }, { language: "en", prompt: "", words: true }, { session }),
+          onProgress,
+        },
+        { mergeGap: (settings.ccSilenceMs ?? 800) / 1000 },
+      );
+    } finally {
+      eng.closeFile(fileId);
+    }
+    // The 16 kHz copy starts where the file's audio track does.
+    const fileDuration = take.analysis?.file?.probe?.duration ?? Infinity;
+    const offsetS = take.analysis?.file?.probe?.tracks?.find((t) => t.type === "audio")?.firstTimestamp ?? 0;
+    const place = (t) => Math.round(Math.min(fileDuration, Math.max(0, t + offsetS)) * 1000) / 1000;
+    const segments = pass.segments.map((s) => ({ ...s, start: place(s.start), end: place(s.end), ...(s.words && { words: s.words.map((w) => ({ ...w, start: place(w.start), end: place(w.end) })) }) })).filter((s) => s.end > s.start);
+    const i = eng.info ?? {};
+    return {
+      format: TRANSCRIPT_FORMAT,
+      takeId: take.id,
+      kind: "final",
+      createdAt: Date.now(),
+      engine: { model: i.model ?? modelDir(resolve(model)), label: resolve(model)?.label ?? model, dtype: i.dtype ?? null, device: i.device ?? null, threads: i.threads ?? null, crossOriginIsolated: i.crossOriginIsolated ?? null, fallback: i.fallback ?? null, wordsFrom: i.wordsFrom ?? null, from: i.from ?? null },
+      settings: { lang: "en-US", model, device: settings.ccDevice, vad, vadLevel: settings.ccVadLevel, vadThreshold: settings.ccVadThreshold, mergeGapMs: settings.ccSilenceMs ?? 800, words },
+      clock: { offsetS, offsetFrom: "decoded" },
+      segments,
+      stats: {
+        ...captionStats(segments),
+        speechRegions: pass.speech.length,
+        parts: pass.parts.length,
+        dropped: pass.dropped,
+        tookS: Math.round(performance.now() - started) / 1000,
+        // How the live captions differ from this pass, word for word.
+        againstLive: live?.segments ? transcriptErrors(segments, live.segments) : null,
+      },
+    };
+  }
+
   return {
     start,
     stop,
     boundary,
     takeTranscript,
+    secondPass,
     get run() {
       return run;
     },

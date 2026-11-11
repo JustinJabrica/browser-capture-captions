@@ -2578,3 +2578,16 @@ body[data-source="file"] .captions {
     gap: 0;
   }
 }
+
+/* A take's transcript heading: which transcript is shown (the live captions'
+   or the second pass's) and the button that makes the second pass. */
+.transcript-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.transcript-head .btn {
+  margin-left: auto;
+}

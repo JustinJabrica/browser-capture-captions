@@ -88,9 +88,9 @@ export function estimatedOffset({ recorder, timeline }) {
 // lost something to the take's edges:
 // - the speech went on past a cut (its cut flag: the take paused or stopped
 //   mid-sentence);
-// - it began at a cut with the speech already going (its continued flag:
-//   the take started or resumed mid-sentence), so its beginning is outside
-//   the take;
+// - it carries on an utterance that a cut ended (its continued flag: the
+//   take started or resumed mid-sentence), so its beginning is outside the
+//   take;
 // - or clipping moved an end by more than one of the detector's 20 ms frames.
 // Words outside the take are dropped. frames is the segment's own range on
 // the context's clock, so its time can be worked out again.

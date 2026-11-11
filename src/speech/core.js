@@ -1,6 +1,7 @@
 // The speech engine's settings, the client for the engine worker, and
 // language and transcript helpers. Every importer on a page gets the same
-// engine and worker. Carried over from
+// engine and worker; createEngine() makes another, with settings of its own
+// (a different model, say), for work that shouldn't wait behind live captions. Carried over from
 // automatic-speech-recognition-and-diarization's src/core.js, without the
 // speaker models and the server-side engines.
 
@@ -49,18 +50,18 @@ export const config = {
 // The model the worker loads, as its registry entry: with words: "whisper",
 // the model's timestamped export (same weights, plus the cross-attention
 // outputs word times need).
-export function loadedModel() {
-  const entry = resolve(config.model, { kind: "asr" });
-  return (config.words === "whisper" && timestampedFor(config.model)) || entry;
+export function loadedModel(settings = config) {
+  const entry = resolve(settings.model, { kind: "asr" });
+  return (settings.words === "whisper" && timestampedFor(settings.model)) || entry;
 }
 
 // Where a model's files come from: { model (its repo), localModelPath,
 // allowRemoteModels, from: "same-origin" | "hub" }.
-export function modelSource(idOrRepo, kind) {
+export function modelSource(idOrRepo, kind, settings = config) {
   const entry = resolve(idOrRepo, { kind });
   const repo = modelDir(entry) ?? idOrRepo;
-  const local = config.localModels.includes(repo);
-  return { model: repo, localModelPath: local ? config.modelPath : null, allowRemoteModels: !local, from: local ? "same-origin" : "hub" };
+  const local = settings.localModels.includes(repo);
+  return { model: repo, localModelPath: local ? settings.modelPath : null, allowRemoteModels: !local, from: local ? "same-origin" : "hub" };
 }
 
 // Settings that are read per run, so they can change after the engine loads.
@@ -94,6 +95,12 @@ export function configure(options = {}) {
 // ---------------------------------------------------------------------------
 
 class EngineClient extends EventTarget {
+  // settings: the shared config, or a copy with its own model and device.
+  constructor(settings = config) {
+    super();
+    this.settings = settings;
+  }
+
   state = "unloaded"; // unloaded | loading | ready | error
   info = null;
   error = null;
@@ -117,18 +124,19 @@ class EngineClient extends EventTarget {
         event.preventDefault();
         if (this.#worker === worker) this.#failLoad(event.message || "The speech worker failed to start", reject);
       };
-      const asr = modelSource(loadedModel().id, loadedModel().kind);
+      const s = this.settings;
+      const asr = modelSource(loadedModel(s).id, loadedModel(s).kind, s);
       worker.postMessage({
         type: "load",
         config: {
           ...asr,
-          words: config.words,
-          alignment: modelSource(config.alignmentModel, "alignment"),
-          silero: modelSource("silero-vad", "vad"),
-          dtype: config.dtype,
-          device: config.device,
-          transformersUrl: config.transformersUrl,
-          wasmPaths: config.wasmPaths,
+          words: s.words,
+          alignment: modelSource(s.alignmentModel, "alignment", s),
+          silero: modelSource("silero-vad", "vad", s),
+          dtype: s.dtype,
+          device: s.device,
+          transformersUrl: s.transformersUrl,
+          wasmPaths: s.wasmPaths,
         },
       });
     });
@@ -265,6 +273,11 @@ class EngineClient extends EventTarget {
 }
 
 export const engine = new EngineClient();
+
+// Another engine, in a worker of its own, with the shared settings as they
+// are now and these in place of some: { model, device, words, localModels }.
+// It loads on first use and holds its model until reset().
+export const createEngine = (overrides = {}) => new EngineClient({ ...config, ...overrides });
 
 // ---------------------------------------------------------------------------
 // Languages and transcripts

@@ -1013,6 +1013,111 @@ if (!hasModel) {
     return `${r.before.container} → ${take.name.split("-")[0]}-…-subtitled.webm · ${r.before.tracks.map((t) => `${t.codec} ${t.packets} packets`).join(", ")} copied · tracks ${read.codecs.join(", ")} · cues at ${read.cues.map((c) => `${c.start}-${c.end}`).join(", ")} s · ${r.made.size - r.originalSize} bytes more`;
   });
 
+  // --- The second pass -------------------------------------------------------------------------
+
+  // Presses the card's second-pass button and waits for the take's new transcript.
+  async function secondPass() {
+    const labels = [];
+    const before = await page.evaluate(() => window.captureBench.latest.transcripts?.final?.createdAt ?? 0);
+    await page.click('#latest [data-action="second-pass"]');
+    const started = Date.now();
+    for (;;) {
+      const now = await page.evaluate(() => ({ label: document.querySelector('#latest [data-action="second-pass"] .label')?.textContent, made: window.captureBench.latest.transcripts?.final?.createdAt ?? 0 }));
+      if (labels.at(-1) !== now.label) labels.push(now.label);
+      if (now.made > before) break;
+      assert(Date.now() - started < 90000, `no second pass after 90 s; the button said: ${labels.join(" → ")}`);
+      await sleep(50);
+    }
+    return labels;
+  }
+  const cardNow = () =>
+    page.evaluate(async () => {
+      const take = window.captureBench.latest;
+      const { takeTranscripts } = await import("./page/takes.js");
+      return {
+        take,
+        transcripts: await takeTranscripts(take.id),
+        rows: [...document.querySelectorAll("#latest .take-transcript li")].map((li) => li.textContent),
+        picked: document.querySelector("#latest .transcript-pick input:checked")?.value ?? null,
+        choices: [...document.querySelectorAll("#latest .transcript-pick input")].map((i) => i.value),
+        button: document.querySelector('#latest [data-action="second-pass"] .label')?.textContent ?? null,
+        hint: document.querySelector("#latest .take-transcript .hint")?.textContent ?? null,
+        downloads: [...document.querySelectorAll("#latest [data-download]")].map((b) => b.dataset.download),
+        groups: [...document.querySelectorAll("#latest .metrics h4")].map((h) => h.textContent),
+        cues: [...(document.querySelector("#latest .take-video")?.textTracks[0]?.cues ?? [])].map((c) => [c.startTime, c.endTime]),
+      };
+    });
+  // The second pass keeps 100 ms either side of the speech the detector finds.
+  const onSpeech = (segment, region) => near(segment.start, region[0], 0.25) && near(segment.end, region[1], 0.25);
+
+  await test("second pass: the finished take transcribed again, kept beside the live transcript, and either can be shown", async () => {
+    // The media file take, which has a live transcript.
+    const before = await cardNow();
+    assert(before.button === "Second pass" && !before.choices.length, `the card offers "${before.button}" and the choices ${before.choices.join(", ") || "none"}`);
+    const labels = await secondPass();
+    const { speech } = await transcriptOf(before.take.id);
+    const after = await cardNow();
+    const { live, final } = after.transcripts;
+    assert(final?.kind === "final" && final.segments.length === 2, `${final?.segments.length} captions in the second pass`);
+    assert(words(final.segments.map((x) => x.transcript).join(" ")) === "speech recognition now works in firefox everything runs locally on this computer", final.segments.map((x) => x.transcript).join(" | "));
+    for (const [i, segment] of final.segments.entries()) assert(onSpeech(segment, speech[i]), `caption ${i + 1} at ${segment.start}-${segment.end} s, speech at ${speech[i].join("-")} s`);
+    assert(live.segments.length === 2, "the live transcript is gone");
+    const w = final.stats.againstLive;
+    assert(w && w.words === 12 && w.rate <= 0.2, `the live captions against it: ${JSON.stringify(w)}`);
+    // The card shows the new one, and offers both.
+    assert(after.take.transcripts.chosen === "final" && after.picked === "final" && after.choices.join() === "live,final", `chosen ${after.take.transcripts.chosen}, picked ${after.picked} of ${after.choices.join(", ")}`);
+    assert(after.button === "Transcribe again", `the button says "${after.button}"`);
+    assert(after.groups.includes("Second pass") && after.groups.includes("Captions"), `the card measures: ${after.groups.join(", ")}`);
+    assert(near(after.cues[0]?.[0], final.segments[0].start, 0.002), `the subtitles start at ${after.cues[0]?.[0]} s, the second pass at ${final.segments[0].start} s`);
+    assert(labels.some((l) => /Finding the speech/.test(l)) && labels.some((l) => /Transcribing \d of 2/.test(l)), `the button said: ${labels.join(" → ")}`);
+    // Back to the live one: the card follows, and the choice is kept with the take.
+    await page.click('#latest .transcript-pick input[value="live"]');
+    await page.waitForFunction(() => window.captureBench.latest.transcripts.chosen === "live");
+    const back = await cardNow();
+    assert(back.picked === "live" && near(back.cues[0]?.[0], live.segments[0].start, 0.002), `picked ${back.picked}; subtitles from ${back.cues[0]?.[0]} s, the live captions from ${live.segments[0].start} s`);
+    const stored = await page.evaluate(async (id) => (await (await import("./page/takes.js")).listTakes()).find((t) => t.id === id).transcripts.chosen, before.take.id);
+    assert(stored === "live", `the saved take's choice is ${stored}`);
+    const logged = await page.evaluate(() => [...document.querySelectorAll("#log li > b")].filter((b) => b.textContent.trim() === "second pass").length);
+    assert(logged === 2, `${logged} second pass events logged`);
+    return `${final.segments.map((x) => `${x.start}-${x.end}`).join(", ")} s against speech at ${speech.map((r) => r.join("-")).join(", ")} s (live: ${live.segments.map((x) => `${x.start}-${x.end}`).join(", ")} s) · the live captions differ in ${w.errors} of ${w.words} words · took ${final.stats.tookS} s, model ${final.stats.rtf}× the speech`;
+  });
+
+  await test("second pass: a take recorded with captions off gets its only transcript, and its subtitles", async () => {
+    try {
+      const t = await fileTake("test/fixtures/two-sentences.wav", { captions: false });
+      const before = await cardNow();
+      assert(!t.transcripts?.live && !t.transcripts?.final, "a take recorded with captions off has a transcript");
+      assert(before.button === "Transcribe the recording" && !before.rows.length && /no transcript/.test(before.hint ?? ""), `the card says "${before.hint}" and offers "${before.button}"`);
+      assert(!before.downloads.includes("vtt"), `downloads before: ${before.downloads.join(", ")}`);
+      await secondPass();
+      const after = await cardNow();
+      const { speech } = await transcriptOf(t.id);
+      const final = after.transcripts.final;
+      assert(final.segments.length === 2 && final.stats.againstLive === null, `${final.segments.length} captions; against live: ${JSON.stringify(final.stats.againstLive)}`);
+      for (const [i, segment] of final.segments.entries()) assert(onSpeech(segment, speech[i]), `caption ${i + 1} at ${segment.start}-${segment.end} s, speech at ${speech[i].join("-")} s`);
+      assert(after.rows.length === 2 && after.cues.length >= 2 && !after.choices.length, `${after.rows.length} rows, ${after.cues.length} cues, choices ${after.choices.join(", ") || "none"}`);
+      for (const kind of ["subtitled", "vtt", "srt", "txt", "transcript"]) assert(after.downloads.includes(kind), `downloads after: ${after.downloads.join(", ")}`);
+      return `"${final.segments.map((x) => x.transcript).join(" ")}" · ${after.cues.length} cues on the recording`;
+    } finally {
+      await resetCaptions();
+    }
+  });
+
+  await test("second pass: made by itself after a take when the setting says so, with another model's settings read", async () => {
+    try {
+      const t = await fileTake("test/fixtures/two-sentences.wav", { ccFinalAuto: true });
+      // The take is saved and shown at once, with its live transcript; the second pass follows.
+      assert(t.transcripts.live && !t.transcripts.final, "the take was held back for its second pass");
+      await page.waitForFunction((id) => window.captureBench.latest?.id === id && window.captureBench.latest.transcripts?.final, { timeout: 90000 }, t.id);
+      const after = await cardNow();
+      assert(after.take.transcripts.chosen === "final" && after.transcripts.final.segments.length === 2 && after.picked === "final", `chosen ${after.take.transcripts.chosen}, ${after.transcripts.final.segments.length} captions, picked ${after.picked}`);
+      assert(after.transcripts.final.settings.model === CAPTION_MODEL, `the pass used ${after.transcripts.final.settings.model}`);
+      return `${after.transcripts.final.stats.segments} captions ${after.transcripts.final.stats.tookS} s after the take was saved`;
+    } finally {
+      await resetCaptions({ ccFinalAuto: false });
+    }
+  });
+
   if (!isFirefox) {
     // Picture and sound from the camera and microphone, in the two other containers the bench writes.
     for (const [label, params, container] of [
@@ -1037,6 +1142,178 @@ if (!hasModel) {
         }
       });
     }
+  }
+
+  // --- Captions burned in ---------------------------------------------------------------------
+
+  // Burns subtitles into a take in the page, one way or the other, and compares frames of the
+  // copy with the same frames of the recording: where the caption is drawn, and elsewhere.
+  const burned = (id, method, cues) =>
+    page.evaluate(
+      async (id, method, cues) => {
+        const [{ takeMedia }, { burnIn, burnInRealtime }, { CAPTION_STYLE, layoutCaption, fontOf }, { probe }] = await Promise.all([import("./page/takes.js"), import("./src/captions/burn-in.js"), import("./src/captions/caption-draw.js"), import("./src/container.js")]);
+        // The usual look, but on a solid magenta box: a colour the test signal has none of, so the
+        // caption can be found in a frame by itself, whatever is under it and however it was encoded.
+        const style = { ...CAPTION_STYLE, background: "#ff00ff" };
+        const media = await takeMedia(id);
+        const original = media.seekable ?? media.file;
+        const progress = [];
+        const started = performance.now();
+        const made = await (method === "realtime" ? burnInRealtime(original, cues, { style, onProgress: (p) => progress.push(p) }) : burnIn(media.file, cues, { style, onProgress: (p) => progress.push(p) }));
+        const tookS = Math.round(performance.now() - started) / 1000;
+        const brief = async (blob) => {
+          const p = (await probe(blob)).probe;
+          return { container: p.container, duration: p.duration, tracks: p.tracks.map((t) => ({ type: t.type, codec: t.codec, packets: t.packets, first: t.firstTimestamp, width: t.width ?? null, height: t.height ?? null })) };
+        };
+        // A frame of a file at time t, as pixels.
+        const frameAt = async (blob, t) => {
+          const video = Object.assign(document.createElement("video"), { muted: true, preload: "auto", src: URL.createObjectURL(blob) });
+          await new Promise((resolve, reject) => ((video.onloadeddata = resolve), (video.onerror = () => reject(new Error(video.error?.message ?? "the copy doesn't play")))));
+          await new Promise((resolve) => ((video.onseeked = resolve), (video.currentTime = t)));
+          const canvas = Object.assign(document.createElement("canvas"), { width: video.videoWidth, height: video.videoHeight });
+          const ctx = canvas.getContext("2d", { willReadFrequently: true });
+          ctx.drawImage(video, 0, 0);
+          URL.revokeObjectURL(video.src);
+          return ctx;
+        };
+        // The mean difference, 0 to 255, between two frames over a rectangle.
+        const differ = (a, b, x, y, w, h) => {
+          const [p, q] = [a.getImageData(x, y, w, h).data, b.getImageData(x, y, w, h).data];
+          let sum = 0;
+          for (let i = 0; i < p.length; i += 4) sum += Math.abs(p[i] - q[i]) + Math.abs(p[i + 1] - q[i + 1]) + Math.abs(p[i + 2] - q[i + 2]);
+          return Math.round((sum / (p.length * 0.75)) * 10) / 10;
+        };
+        // The share of a rectangle that is magenta: the caption's box.
+        const bright = (a, x, y, w, h) => {
+          const p = a.getImageData(x, y, w, h).data;
+          let n = 0;
+          for (let i = 0; i < p.length; i += 4) if (p[i] > 150 && p[i + 2] > 150 && p[i + 1] < 110) n++;
+          return Math.round((n / (p.length / 4)) * 1000) / 1000;
+        };
+        const { width, height } = made;
+        // Where the first cue's letters are drawn.
+        const ctx = document.createElement("canvas").getContext("2d");
+        const layout = layoutCaption(cues[0].lines, width, height, (text, px) => ((ctx.font = fontOf(px)), ctx.measureText(text).width));
+        const box = layout.lines[0].box;
+        const rect = [Math.round(box.x), Math.round(box.y), Math.round(box.width), Math.round(layout.band.height)];
+        const during = (cues[0].start + cues[0].end) / 2;
+        const outside = cues[0].end + (cues[1].start - cues[0].end) / 2;
+        const [a1, b1, a2, b2] = [await frameAt(original, during), await frameAt(made.blob, during), await frameAt(original, outside), await frameAt(made.blob, outside)];
+        return {
+          made: { ...made, blob: undefined, size: made.blob.size },
+          tookS,
+          progress: [progress.length, progress.at(-1)],
+          before: await brief(media.file),
+          after: await brief(made.blob),
+          // The caption's place during the cue and outside it, and the top of the picture during it.
+          pixels: { caption: differ(a1, b1, ...rect), captionOutside: differ(a2, b2, ...rect), elsewhere: differ(a1, b1, 0, 0, width, Math.round(height / 4)), letters: bright(b1, ...rect), lettersOutside: bright(b2, ...rect), lettersBefore: bright(a1, ...rect) },
+        };
+      },
+      id,
+      method,
+      cues,
+    );
+  const HAND_CUES = [
+    { start: 1, end: 3, lines: ["Captions drawn into the picture,", "two lines of them."] },
+    { start: 4, end: 5.5, lines: ["And a second one."] },
+  ];
+  // The caption is there while its cue is: its (magenta, for the test) box where there was none, and none between cues.
+  // sameFrames: the copy's frame at a time is the recording's frame at that time, as WebCodecs keeps it, so
+  // the two can be compared pixel for pixel, and nowhere else may the picture change by more than a second
+  // encoding does. Played through a canvas, the copy's frame is a neighbouring one, and the test signal
+  // differs from frame to frame, so there only the letters are looked for.
+  function checkBurned(r, { sameFrames = true } = {}) {
+    const p = r.pixels;
+    assert(p.letters > 0.4 && p.lettersOutside < 0.02 && p.lettersBefore < 0.02, `the caption's box fills ${p.letters} of its place during its cue, ${p.lettersOutside} between cues, and ${p.lettersBefore} in the recording`);
+    if (sameFrames) {
+      assert(p.caption > 12, `where the caption is drawn, the copy differs from the recording by only ${p.caption} of 255`);
+      assert(p.captionOutside < 8, `between cues, the caption's place differs by ${p.captionOutside} of 255`);
+      assert(p.elsewhere < 8, `away from the caption, the picture differs by ${p.elsewhere} of 255`);
+    }
+    assert(r.made.captioned > 10 && r.made.captioned < r.made.frames, `${r.made.captioned} of ${r.made.frames} frames were drawn on`);
+    const video = (p) => p.tracks.find((t) => t.type === "video");
+    assert(video(r.after)?.width === video(r.before).width && video(r.after).height === video(r.before).height, `the copy's picture is ${video(r.after)?.width}×${video(r.after)?.height}, the recording's ${video(r.before).width}×${video(r.before).height}`);
+    assert(r.after.tracks.some((t) => t.type === "audio"), "the copy has no sound");
+    assert(r.progress[0] > 5 && r.progress[1] === 1, `progress was reported ${r.progress[0]} times, ending at ${r.progress[1]}`);
+  }
+
+  if (webcodecs) {
+    await test("captions burned in: every frame decoded, drawn on while its cue is up, and encoded again; the sound copied", async () => {
+      // The test signal: a picture that says which frame it is, with captions off (the cues are the test's own).
+      const t = await recordTake("synthetic", 6000);
+      await closeSource();
+      const r = await burned(t.id, "webcodecs", HAND_CUES);
+      checkBurned(r);
+      const [vb, va] = [r.before.tracks.find((x) => x.type === "video"), r.after.tracks.find((x) => x.type === "video")];
+      const [ab, aa] = [r.before.tracks.find((x) => x.type === "audio"), r.after.tracks.find((x) => x.type === "audio")];
+      assert(va.packets === vb.packets && r.made.frames === vb.packets, `${r.made.frames} frames drawn and ${va.packets} written, from ${vb.packets} in the recording`);
+      assert(va.codec === vb.codec && r.made.videoCodec === vb.codec, `the picture was ${vb.codec} and is now ${va.codec}`);
+      assert(near(va.first, vb.first, 0.0025) && near(r.after.duration, r.before.duration, 0.05), `the picture starts at ${va.first} s (from ${vb.first} s) and the copy lasts ${r.after.duration} s (from ${r.before.duration} s)`);
+      assert(aa.codec === ab.codec && aa.packets === ab.packets && near(aa.first, ab.first, 0.0025), `the sound: ${JSON.stringify(aa)} from ${JSON.stringify(ab)}`);
+      assert(r.after.container === r.before.container, `${r.before.container} became ${r.after.container}`);
+      // Cues at 1-3 s and 4-5.5 s of a take at about 30 frames a second.
+      const expected = (3.5 / r.before.duration) * vb.packets;
+      assert(near(r.made.captioned, expected, expected * 0.15), `${r.made.captioned} frames were drawn on; 3.5 s of ${r.before.duration} s is about ${Math.round(expected)}`);
+      return `${r.made.frames} frames, ${r.made.captioned} with a caption, ${va.codec} ${va.width}×${va.height} in ${r.after.container} · ${aa.packets} ${aa.codec} packets copied · ${r.tookS} s for a ${r.before.duration.toFixed(1)} s take · the caption's place differs by ${r.pixels.caption} of 255 during its cue, ${r.pixels.captionOutside} between cues; the rest of the picture by ${r.pixels.elsewhere}`;
+    });
+  }
+
+  await test("captions burned in, the other way: the recording played through a canvas and recorded again", async () => {
+    // Forced here; a browser with no VideoEncoder falls back to it.
+    const t = webcodecs ? await page.evaluate(() => window.captureBench.latest) : await recordTake("synthetic", 6000);
+    if (!webcodecs) await closeSource();
+    const r = await burned(t.id, "realtime", HAND_CUES);
+    checkBurned(r, { sameFrames: false });
+    const frames = r.before.tracks.find((x) => x.type === "video").packets;
+    assert(r.made.method === "realtime" && r.made.frames > frames * 0.6, `${r.made.frames} frames drawn of the recording's ${frames}`);
+    assert(r.tookS > r.before.duration * 0.9, `it took ${r.tookS} s to play a ${r.before.duration} s recording`);
+    assert(near(r.after.duration, r.before.duration, 0.6), `the copy lasts ${r.after.duration} s, the recording ${r.before.duration} s`);
+    return `${r.made.frames} of ${frames} frames drawn, ${r.made.captioned} with a caption · ${r.made.mimeType} · ${r.tookS} s for a ${r.before.duration.toFixed(1)} s take · the caption's box fills ${r.pixels.letters} of its place during its cue, ${r.pixels.lettersOutside} between cues`;
+  });
+
+  if (!isFirefox) {
+    await test("captions burned in: the card's button, from the take's own transcript (Chromium)", async () => {
+      await setParams({ captions: true, ccModel: CAPTION_MODEL });
+      try {
+        const t = await recordTake("camera", 8000);
+        await closeSource();
+        const { live } = await transcriptOf(t.id);
+        assert(live.segments.length >= 1, "the take has no captions to burn in");
+        await page.evaluate(() => {
+          window.testDownloads = [];
+          window.testClick = HTMLAnchorElement.prototype.click;
+          HTMLAnchorElement.prototype.click = function () {
+            window.testDownloads.push(fetch(this.href).then((x) => x.blob()).then((blob) => ({ name: this.download, size: blob.size, type: blob.type })));
+          };
+        });
+        try {
+          const labels = [];
+          await page.click('#latest [data-download="burned"]');
+          const started = Date.now();
+          while ((await page.evaluate(() => window.testDownloads.length)) < 1) {
+            const label = await page.$eval('#latest [data-download="burned"] .label', (el) => el.textContent);
+            if (labels.at(-1) !== label) labels.push(label);
+            assert(Date.now() - started < 60000, `no download after 60 s; the button said: ${labels.join(" → ")}`);
+            await sleep(20);
+          }
+          const [got] = await page.evaluate(() => Promise.all(window.testDownloads));
+          const state = await page.evaluate(() => ({
+            label: document.querySelector('#latest [data-download="burned"] .label').textContent,
+            logged: [...document.querySelectorAll("#log li")].filter((li) => li.querySelector("b").textContent.trim() === "burn in").map((li) => li.querySelector("span").textContent),
+            alerts: document.querySelector("#alerts").textContent.trim(),
+          }));
+          assert(got.name === `${t.name}-captioned.webm` && got.type === "video/webm" && got.size > 10000, `downloaded ${got.name}, ${got.size} bytes, ${got.type}`);
+          assert(state.label === "captions burned in" && !state.alerts, `the button says "${state.label}"; alerts: ${state.alerts || "none"}`);
+          assert(state.logged.length === 2 && /captions drawn on \d+ of \d+ frames/.test(state.logged[1]), `logged: ${state.logged.join(" | ")}`);
+          return state.logged[1].replace(`${t.name}: `, "");
+        } finally {
+          await page.evaluate(() => (HTMLAnchorElement.prototype.click = window.testClick));
+        }
+      } finally {
+        await closeSource();
+        await setParams({ captions: false });
+      }
+    });
   }
 
   if (webcodecs) {

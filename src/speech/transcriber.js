@@ -41,7 +41,7 @@ const EVENTS = ["start", "segment", "vad", "error", "end"];
 // closed (silenceMs of quiet after the speech, maxSegmentMs, or a cut) to
 // this segment's delivery, which includes waiting behind earlier utterances.
 // cut is true on a final segment that cut() ended while the speech went on,
-// and continued on one that began at a cut with the speech already going.
+// and continued on one that carries on an utterance a cut ended.
 // speaker is always null here: speaker labels are a later stage.
 export class SegmentEvent extends Event {
   constructor(type, { id, isFinal, transcript, confidence, start, end, speaker, words, latency, cut, continued }) {

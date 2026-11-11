@@ -22,8 +22,10 @@
 //     settings: the Captions tab's, as the run used them,
 //     clock: { rate, firstFedFrame, startFrame, endFrame, gaps, lostFrames,
 //              offsetS, offsetFrom, estimatedS, waveScore, driftS }   how its times were placed
+//            (a final one: { offsetS, offsetFrom: "decoded" }, the audio track's first timestamp)
 //     segments: [{ id, start, end, transcript, confidence, speaker, words?, latency?, ms?, clipped?, frames }],
 //     stats: { segments, words, speechS, latencyS, rtf, interims }, incomplete? }
+//            (a final one: { segments, words, speechS, rtf, tookS, dropped, againstLive })
 //   start and end are seconds on the saved file's timeline.
 
 const DB = "caption-bench";
@@ -114,6 +116,29 @@ export async function takeTranscripts(id) {
     }
   });
   return out;
+}
+
+// Adds or replaces one of a take's transcripts ("live" or "final"), and makes
+// it the one the take's subtitles come from. Resolves to the take's report as
+// it is now, or to null when the take isn't saved.
+export async function saveTranscript(id, kind, transcript) {
+  const report = await transact([REPORTS], "readonly", (tx) => tx.objectStore(REPORTS).get(id));
+  if (!report) return null;
+  const record = { ...report, transcripts: { live: null, final: null, ...report.transcripts, [kind]: transcriptSummary(transcript), chosen: kind } };
+  await transact([REPORTS, TRANSCRIPTS], "readwrite", (tx) => {
+    tx.objectStore(TRANSCRIPTS).put(transcript, `${id}/${kind}`);
+    tx.objectStore(REPORTS).put(record);
+  });
+  return record;
+}
+
+// Chooses which transcript a take's subtitles come from. Resolves to the report as it is now.
+export async function chooseTranscript(id, kind) {
+  const report = await transact([REPORTS], "readonly", (tx) => tx.objectStore(REPORTS).get(id));
+  if (!report?.transcripts?.[kind]) return report ?? null;
+  const record = { ...report, transcripts: { ...report.transcripts, chosen: kind } };
+  await transact([REPORTS], "readwrite", (tx) => tx.objectStore(REPORTS).put(record));
+  return record;
 }
 
 export function deleteTake(id) {

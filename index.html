@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Capture bench</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230b63ce' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2.5' y='6' width='13' height='12' rx='2'/%3E%3Cpath d='m15.5 10.5 6-3.5v10l-6-3.5'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="page/app.css" />
+    <script src="page/load-check.js"></script>
+    <script type="module" src="page/app.js"></script>
+  </head>
+  <body data-source="camera" data-state="idle">
+    <header class="appbar">
+      <h1 class="sr-only">Capture bench</h1>
+      <a class="brand" href="./"><svg class="icon" aria-hidden="true"><use href="page/icons.svg#capture"></use></svg>Capture bench</a>
+      <nav class="nav" aria-label="Pages">
+        <a href="./" aria-current="page">Bench</a>
+        <a href="guide.html" target="_blank" rel="noopener">Guide</a>
+      </nav>
+      <div class="env">
+        <span class="chip" id="browser"></span>
+        <span class="chip" id="secure" data-state="unloaded"><span class="dot"></span><span class="chip-text">Secure context</span></span>
+        <span class="chip" id="perm-camera" data-state="unloaded"><span class="dot"></span><span class="chip-text">Camera</span></span>
+        <span class="chip" id="perm-mic" data-state="unloaded"><span class="dot"></span><span class="chip-text">Microphone</span></span>
+        <span class="chip" id="context" data-state="unloaded"><span class="dot"></span><span class="chip-text">Audio off</span></span>
+      </div>
+    </header>
+
+    <div class="toolbar">
+      <fieldset class="seg" id="source">
+        <legend class="sr-only">Source</legend>
+        <label><input type="radio" name="source" value="camera" checked /><span><svg class="icon" aria-hidden="true"><use href="page/icons.svg#camera"></use></svg>Camera &amp; mic</span></label>
+        <label><input type="radio" name="source" value="cameras" /><span><svg class="icon" aria-hidden="true"><use href="page/icons.svg#camera"></use></svg>Two cameras</span></label>
+        <label><input type="radio" name="source" value="mics" /><span><svg class="icon" aria-hidden="true"><use href="page/icons.svg#mic"></use></svg>Two mics</span></label>
+        <label><input type="radio" name="source" value="screen" /><span><svg class="icon" aria-hidden="true"><use href="page/icons.svg#screen"></use></svg>Screen</span></label>
+        <label><input type="radio" name="source" value="file" /><span><svg class="icon" aria-hidden="true"><use href="page/icons.svg#file"></use></svg>Media file</span></label>
+        <label><input type="radio" name="source" value="synthetic" /><span><svg class="icon" aria-hidden="true"><use href="page/icons.svg#pattern"></use></svg>Test signal</span></label>
+      </fieldset>
+      <div class="source-controls when-camera">
+        <select id="camera-device" aria-label="Camera"><option value="">Default camera</option></select>
+      </div>
+      <div class="source-controls when-cameras">
+        <select id="cams-1" aria-label="Left camera"><option value="">Default camera</option></select>
+        <select id="cams-2" aria-label="Right camera"><option value="">Default camera</option></select>
+      </div>
+      <div class="source-controls when-mic">
+        <select id="mic-device" aria-label="Microphone"><option value="">Default microphone</option></select>
+      </div>
+      <div class="source-controls when-mics">
+        <select id="mics-1" aria-label="Left channel's microphone"><option value="">Default microphone</option></select>
+        <select id="mics-2" aria-label="Right channel's microphone"><option value="">Default microphone</option></select>
+      </div>
+      <div class="source-controls when-file">
+        <select id="sample" aria-label="Media file">
+          <option value="test/fixtures/fox.wav">fox.wav</option>
+          <option value="test/fixtures/two-sentences.wav">two-sentences.wav</option>
+        </select>
+        <label class="btn sm"><svg class="icon" aria-hidden="true"><use href="page/icons.svg#folder"></use></svg>Browse…<input id="file" type="file" accept="audio/*,video/*" class="sr-only" /></label>
+        <label class="btn sm" title="On a phone, records a video with the camera app, then plays it here"><svg class="icon" aria-hidden="true"><use href="page/icons.svg#phone"></use></svg>Camera app…<input id="camera-app" type="file" accept="video/*" capture="environment" class="sr-only" /></label>
+        <span class="hint">or drop a file anywhere</span>
+      </div>
+      <span class="sep" aria-hidden="true"></span>
+      <div class="transport">
+        <button type="button" class="btn" id="start">
+          <svg class="icon" aria-hidden="true"><use href="page/icons.svg#play"></use></svg><span class="when-live">Start preview</span><span class="when-file">Play</span>
+        </button>
+        <button type="button" class="btn primary" id="record"><svg class="icon" aria-hidden="true"><use href="page/icons.svg#record"></use></svg>Record</button>
+        <button type="button" class="btn" id="pause" disabled><svg class="icon" aria-hidden="true"><use href="page/icons.svg#pause"></use></svg><span class="label">Pause</span></button>
+        <button type="button" class="btn" id="stop" disabled><svg class="icon" aria-hidden="true"><use href="page/icons.svg#stop"></use></svg>Stop</button>
+        <button type="button" class="btn quiet" id="close" disabled><svg class="icon" aria-hidden="true"><use href="page/icons.svg#x"></use></svg>Close source</button>
+        <button type="button" class="btn when-file" id="whole-file"><svg class="icon" aria-hidden="true"><use href="page/icons.svg#whole"></use></svg>Analyse whole file</button>
+      </div>
+      <span class="pill" id="status" data-kind="idle"><span class="pill-dot"></span><span class="pill-label" role="status">Idle</span><span class="pill-detail" aria-hidden="true"></span></span>
+    </div>
+
+    <div class="studio">
+      <main class="stage">
+        <div class="alerts" id="alerts"></div>
+        <section class="block" aria-labelledby="view-h" data-view="live" id="output">
+          <header class="block-head">
+            <h2 id="view-h" class="sr-only">Output</h2>
+            <fieldset class="seg" id="view">
+              <legend class="sr-only">Show</legend>
+              <label><input type="radio" name="view" value="live" checked /><span>Live</span></label>
+              <label><input type="radio" name="view" value="takes" /><span>Takes <b class="count" id="takes-count"></b></span></label>
+              <label><input type="radio" name="view" value="browser" /><span>Browser</span></label>
+            </fieldset>
+            <div class="actions when-takes">
+              <label class="btn sm"><svg class="icon" aria-hidden="true"><use href="page/icons.svg#upload"></use></svg>Import…<input id="takes-import" type="file" accept=".json,application/json" class="sr-only" /></label>
+              <button type="button" class="btn sm" id="takes-export"><svg class="icon" aria-hidden="true"><use href="page/icons.svg#download"></use></svg>Export</button>
+              <button type="button" class="btn sm" id="takes-clear"><svg class="icon" aria-hidden="true"><use href="page/icons.svg#clear"></use></svg><span class="label">Clear</span></button>
+            </div>
+            <div class="actions when-browser">
+              <button type="button" class="btn sm" id="caps-refresh"><svg class="icon" aria-hidden="true"><use href="page/icons.svg#reload"></use></svg>Check again</button>
+              <button type="button" class="btn sm" id="caps-download"><svg class="icon" aria-hidden="true"><use href="page/icons.svg#download"></use></svg>.json</button>
+            </div>
+          </header>
+
+          <div class="live when-live-view">
+            <div class="live-main">
+              <div class="monitor">
+                <video id="preview" muted playsinline autoplay aria-label="What the source sends"></video>
+                <video id="player" class="when-file" controls playsinline preload="metadata" aria-label="The media file"></video>
+                <div class="monitor-empty" id="monitor-empty">
+                  <span class="when-camera">Press <b>Start preview</b> to see and hear the camera and microphone, or <b>Record</b> to start a take straight away.</span>
+                  <span class="when-cameras">Two cameras side by side in one picture: the first on the left, the second on the right, with the microphone if <b>audio</b> is on. Pick the same camera twice to see the two keep in step.</span>
+                  <span class="when-mics">Two microphones at once, the first in the left channel and the second in the right. Put one in front of each speaker, or pick the same one twice to see that its channels match.</span>
+                  <span class="when-screen">Press <b>Start preview</b> and pick a screen, window or tab. Ticking <b>Share audio</b> in the browser's picker records its sound too (Chromium browsers only).</span>
+                  <span class="when-synthetic">A test signal with numbered frames, a flash and a beep every second, so the take can be checked for dropped frames and A/V sync.</span>
+                </div>
+              </div>
+              <div class="meters" id="meters" aria-label="Audio levels"></div>
+            </div>
+            <div class="tracks" id="tracks"></div>
+          </div>
+          <div class="when-live-view" id="latest"></div>
+          <div class="compare when-takes" id="takes"></div>
+          <div class="when-browser" id="caps"></div>
+        </section>
+      </main>
+
+      <aside class="panel" id="panel" aria-label="Parameters">
+        <div class="panel-handle" id="panel-handle" role="separator" aria-orientation="vertical" aria-label="Resize the parameters panel" tabindex="0"></div>
+        <div class="tabs" role="tablist" id="param-tabs" aria-label="Parameter groups"></div>
+        <div class="panel-body" id="param-panels"></div>
+      </aside>
+    </div>
+
+    <section class="dock" aria-labelledby="events-h">
+      <div class="dock-handle" id="dock-handle" role="separator" aria-orientation="horizontal" aria-label="Resize the events log" tabindex="0"></div>
+      <header class="block-head">
+        <h2 id="events-h">Events</h2>
+        <span class="meta" id="log-count">0</span>
+        <div class="filters" id="log-filters" role="group" aria-label="Show">
+          <button type="button" data-filter="all" aria-pressed="true">All</button>
+          <button type="button" data-filter="life" aria-pressed="false">Lifecycle</button>
+          <button type="button" data-filter="result" aria-pressed="false">Recorder</button>
+          <button type="button" data-filter="error" aria-pressed="false">Errors</button>
+        </div>
+        <div class="actions">
+          <button type="button" class="btn sm" id="log-clear"><svg class="icon" aria-hidden="true"><use href="page/icons.svg#clear"></use></svg>Clear</button>
+        </div>
+      </header>
+      <ol class="log" id="log" data-filter="all"></ol>
+    </section>
+
+    <div class="drop-overlay" id="drop-overlay" hidden>
+      <div class="drop-card">
+        <svg class="icon" aria-hidden="true"><use href="page/icons.svg#upload"></use></svg>
+        <b>Drop to use this file</b>
+        <span>Audio or video, in any format the browser can play</span>
+      </div>
+    </div>
+  </body>
+</html>

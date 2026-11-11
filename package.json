@@ -1,0 +1,29 @@
+{
+  "name": "browser-capture-captions",
+  "version": "0.1.0",
+  "description": "A test bench that captures video and audio in the browser and writes its own live subtitles, with no server",
+  "scripts": {
+    "postinstall": "node scripts/vendor.mjs",
+    "vendor": "node scripts/vendor.mjs",
+    "start": "node server.mjs",
+    "test": "node test/browser.test.mjs firefox",
+    "test:edge": "node test/browser.test.mjs edge",
+    "test:chrome": "node test/browser.test.mjs chrome",
+    "test:chrome-for-testing": "node test/browser.test.mjs chrome-for-testing",
+    "install:chrome-for-testing": "node scripts/install-chrome-for-testing.mjs",
+    "test:unit": "node --test \"test/unit/*.test.mjs\"",
+    "fixtures": "node scripts/make-fixtures.mjs",
+    "cert": "node scripts/make-cert.mjs",
+    "check:sources": "node scripts/check-sources.mjs",
+    "check:blockers": "node scripts/check-blockers.mjs"
+  },
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "mediabunny": "1.65.1"
+  },
+  "devDependencies": {
+    "@puppeteer/browsers": "3.2.6",
+    "puppeteer-core": "25.16.0"
+  }
+}

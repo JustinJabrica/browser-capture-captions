@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Guide · capture bench</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230b63ce' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2.5' y='6' width='13' height='12' rx='2'/%3E%3Cpath d='m15.5 10.5 6-3.5v10l-6-3.5'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="page/app.css" />
+    <script src="page/load-check.js"></script>
+    <script type="module" src="page/guide.js"></script>
+  </head>
+  <body class="guide-page">
+    <header class="appbar">
+      <a class="brand" href="./"><svg class="icon" aria-hidden="true"><use href="page/icons.svg#capture"></use></svg>Capture bench</a>
+      <nav class="nav" aria-label="Pages">
+        <a href="./">Bench</a>
+        <a href="guide.html" aria-current="page">Guide</a>
+      </nav>
+    </header>
+    <div class="guide">
+      <nav class="guide-toc" aria-label="Topics">
+        <label class="sr-only" for="guide-search">Search the guide</label>
+        <input class="input guide-search" id="guide-search" type="search" placeholder="Search the guide" autocomplete="off" />
+        <p class="guide-count" id="guide-count"></p>
+        <div id="guide-list"></div>
+      </nav>
+      <main class="guide-main" id="guide-main"></main>
+    </div>
+  </body>
+</html>

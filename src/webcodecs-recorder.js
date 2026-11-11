@@ -56,11 +56,12 @@ class Lane {
     this.chain = Promise.resolve(); // packets go to the muxer one at a time, in order
     this.offsetUs = null; // from this track's clock to the take's timeline
     this.lastKeyUs = -Infinity;
+    this.lastUs = -Infinity; // the timeline time of the last frame sent to the encoder
     // When each input went to encode(), by its timeline timestamp, in order: a
     // packet's latency is from the input its first sample or frame came in.
     this.sent = [];
     this.latencies = [];
-    this.stats = { path: null, config: null, supported: null, framesIn: 0, encoded: 0, dropped: 0, keyFramesAsked: 0, keyFramesOut: 0, maxQueue: 0, width: null, height: null, sampleRate: null, channels: null, latencyMs: null };
+    this.stats = { path: null, config: null, supported: null, framesIn: 0, encoded: 0, dropped: 0, outOfOrder: 0, keyFramesAsked: 0, keyFramesOut: 0, maxQueue: 0, width: null, height: null, sampleRate: null, channels: null, latencyMs: null };
     this.stop = () => {};
   }
 
@@ -232,6 +233,10 @@ export class WebCodecsRecorder {
   // The fallback for video: a <video> element plays the track, and each frame
   // it presents is copied into a VideoFrame, stamped with when the camera took
   // it where the browser says (captureTime), otherwise when it was presented.
+  // Every frame, the first included, comes from requestVideoFrameCallback
+  // where there is one, so that all are stamped on the same clock: a first
+  // frame taken as soon as play() resolved was stamped "now", which could be
+  // later than the time the frame after it carried.
   #readElement(lane, track, o) {
     const video = Object.assign(document.createElement("video"), { muted: true, playsInline: true, srcObject: new MediaStream([track]) });
     let running = true;
@@ -248,10 +253,10 @@ export class WebCodecsRecorder {
       } catch {
         // No picture yet.
       }
-      if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(onFrame);
-      else requestAnimationFrame((t) => onFrame(t, null));
+      next();
     };
-    video.play().then(() => onFrame(performance.now(), null), () => {});
+    const next = () => (video.requestVideoFrameCallback ? video.requestVideoFrameCallback(onFrame) : requestAnimationFrame((t) => onFrame(t, null)));
+    video.play().then(next, () => {});
   }
 
   // The fallback for audio: each block of the bench's AudioWorklet tap (about
@@ -291,6 +296,16 @@ export class WebCodecsRecorder {
     if (!lane.encoder && !this.#configureVideo(lane, frame, o)) return frame.close();
     // The first frame is placed at the moment it arrived, so it's never before 0.
     const ts = Math.max(0, Math.round(lane.place(rawUs)));
+    // A frame stamped no later than the one before it is left out. Encoders and muxers want
+    // time to go forward: Firefox's VP8 and VP9 encoders stop with "EncodingError: The given
+    // encoding is not supported" at a frame that goes back, and Mediabunny refuses a packet
+    // that goes back past a key frame. Frame times do sometimes go back or stand still: a
+    // frame presented just before Resume and delivered just after it has the whole pause
+    // taken off its time, and two frames in a row can carry the same presentation time.
+    if (ts <= lane.lastUs) {
+      lane.stats.outOfOrder++;
+      return frame.close();
+    }
     const queued = lane.encoder.encodeQueueSize;
     lane.stats.maxQueue = Math.max(lane.stats.maxQueue, queued);
     if (queued >= (o.queueLimit ?? 8)) {
@@ -305,6 +320,7 @@ export class WebCodecsRecorder {
     // The same picture, restamped: a new VideoFrame on the same memory, not a copy.
     const stamped = new VideoFrame(frame, { timestamp: ts });
     frame.close();
+    lane.lastUs = ts;
     lane.sent.push({ ts, at: performance.now() });
     try {
       lane.encoder.encode(stamped, { keyFrame });

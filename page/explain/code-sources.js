@@ -48,6 +48,7 @@ export const CODE = {
   wcQueueLimit: ["src/webcodecs-recorder.js"],
   wcFramePath: ["src/webcodecs-recorder.js", "src/audio.js"],
   "m-wc-latency": ["src/webcodecs-recorder.js"],
+  "m-wc-order": ["src/webcodecs-recorder.js"],
   "caps-encoders": ["src/webcodecs-recorder.js", "src/capabilities.js"],
   "group-captions": ["page/captions.js", "src/captions/tap-feed.js", "src/speech/transcriber.js", "src/speech/engine-worker.js"],
   captions: ["page/captions.js", "page/app.js"],

@@ -1,5 +1,6 @@
 // The capture bench (index.html). Pick a source, preview it with its levels
 // and what the browser gave against what was asked for, and record takes.
+// While a source is open, a speech model in the page captions what it hears.
 // Each take is analysed after Stop and saved, with its files, in the Takes
 // view; the Browser view shows what this browser supports.
 //
@@ -21,6 +22,8 @@ import { loadFile, playAndCapture } from "../src/sources/media-file.js";
 import { openMics } from "../src/sources/mics.js";
 import { openSynthetic } from "../src/sources/synthetic.js";
 import { listDevices, openUserMedia, userMediaConstraints } from "../src/sources/user-media.js";
+import { ofKind } from "../src/speech/registry.js";
+import { createCaptions } from "./captions.js";
 import { createCompare } from "./compare.js";
 import { setupExplainers } from "./explain.js";
 import { cardHTML, fillCard, tracksHTML } from "./take-view.js";
@@ -242,6 +245,49 @@ const ANALYSIS_PARAMS = [
   { key: "silenceDb", type: "range", def: -50, min: -90, max: -20, step: 1, unit: "dBFS", desc: "Quieter than this (in 20 ms windows) counts as silence." },
 ];
 
+// Captions: the speech engine's settings (page/captions.js, src/speech/).
+const CAPTION_PARAMS = [
+  { key: "captions", type: "switch", def: true, desc: "Caption the source's sound as it plays, with a speech model that runs in this page. Nothing is sent anywhere." },
+  {
+    key: "ccModel",
+    label: "model",
+    type: "select",
+    def: "auto",
+    options: [["auto", "automatic: base.en if it's on this server, else tiny.en"], ...ofKind("asr").map((m) => [m.id, `${m.label} · ${m.loadMB?.wasm ?? m.loadMB?.webgpu} MB`])],
+    desc: "The speech model. Bigger models make fewer mistakes and take longer; all of these hear English only, except large-v3-turbo. One that isn't on this server is downloaded from the Hugging Face hub the first time, and the browser keeps it.",
+  },
+  {
+    key: "ccDevice",
+    label: "device",
+    type: "select",
+    def: "wasm",
+    options: [
+      ["wasm", "WebAssembly (the CPU)"],
+      ["webgpu", "WebGPU (the graphics card)"],
+    ],
+    tag: navigator.gpu ? undefined : "not supported here",
+    desc: "Where the model runs. WebAssembly works everywhere; WebGPU runs Whisper's encoder on the graphics card, which is faster only on some machines, and falls back to WebAssembly if it fails.",
+  },
+  {
+    key: "ccVad",
+    label: "speech detector",
+    type: "select",
+    def: "energy",
+    options: [
+      ["energy", "energy (loudness against the room's noise)"],
+      ["webrtc-vad", "WebRTC VAD"],
+      ["silero-vad", "Silero VAD (a small model; must be on this server)"],
+    ],
+    desc: "What decides where speech starts and stops, so the model is given one utterance at a time.",
+  },
+  { key: "ccVadLevel", label: "WebRTC level", type: "number", def: 2, min: 0, max: 3, step: 1, desc: "WebRTC VAD's aggressiveness, 0 to 3: higher rejects more noise, and can clip quiet words." },
+  { key: "ccVadThreshold", label: "Silero threshold", type: "range", def: 0.5, min: 0.05, max: 0.95, step: 0.05, desc: "Silero counts a moment as speech when its probability reaches this." },
+  { key: "ccSilenceMs", label: "pause that ends an utterance", type: "number", def: 800, unit: "ms", min: 200, step: 50, desc: "This much quiet after speech ends the utterance, and its final caption follows. Shorter gives captions sooner and cuts sentences in more places." },
+  { key: "ccMaxSegmentMs", label: "longest utterance", type: "number", def: 20000, unit: "ms", min: 2000, max: 28000, step: 500, desc: "Speech without a pause is cut after this long. Whisper hears 30 s at a time and drops what's past that." },
+  { key: "ccInterim", label: "interim text", type: "switch", def: true, desc: "Show a first guess while someone is still speaking, by transcribing the utterance so far again and again. Off leaves the processor to the recorder until each utterance ends." },
+  { key: "ccInterimIntervalMs", label: "interim every", type: "number", def: 500, unit: "ms", min: 100, step: 50, desc: "How often the utterance so far is transcribed again for the interim text, at most." },
+];
+
 const params = createParams({
   tabList: $("param-tabs"),
   panelHost: $("param-panels"),
@@ -276,9 +322,18 @@ const params = createParams({
       } The Browser view lists the codecs its encoders take.</p>`,
       params: WEBCODECS_PARAMS,
     },
+    {
+      id: "captions",
+      title: "Captions",
+      badge: "Whisper · Transformers.js",
+      when: "Read when a source opens. The speech model loads the first time, and again after <code>model</code> or <code>device</code> changes. <b>Close source</b> to use a change.",
+      params: CAPTION_PARAMS,
+    },
     { id: "analysis", title: "Analysis", badge: "after Stop", when: "Used when a take is analysed, after <b>Stop</b>.", params: ANALYSIS_PARAMS },
   ],
 });
+
+const captions = createCaptions({ overlay: $("captions"), chip: $("speech"), log });
 
 const kbps = (v) => (v == null ? undefined : Math.round(v * 1000));
 const cameraSettings = (v) => ({ ...v, videoDevice: $("camera-device").value, audioDevice: $("mic-device").value });
@@ -449,6 +504,9 @@ async function openSource() {
     renderTracks(true);
     setState("previewing");
     status.set("previewing", "Previewing", "");
+    // Captions start by themselves and never hold the preview up: the model may still be downloading.
+    if (v.captions && !session.tap) log.add("life", "captions", "off: this source has no sound");
+    captions.start(session.tap, v);
     refreshDevices();
     refreshPermissions();
   } catch (err) {
@@ -464,6 +522,7 @@ async function openSource() {
 
 function closeSource() {
   if (!session) return;
+  captions.stop();
   session.tap?.close();
   for (const layer of [...session.layers].reverse()) layer.release();
   clearInterval(session.ticker);
@@ -1076,4 +1135,5 @@ window.captureBench = {
   showView,
   useSource,
   params,
+  captions,
 };

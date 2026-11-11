@@ -37,10 +37,13 @@ test("no served file loads a URL from the server's root", () => {
   assert.deepEqual(found, []);
 });
 
-test("every vendored file is installed, and something loads it", () => {
+test("every vendored file is installed, and something loads from its folder", () => {
+  // Some are named in parts (a folder plus a file name) or loaded by the file
+  // beside them (a .wasm by its .js), so the folder is what's looked for.
   const all = [...text.values()].join("\n");
   for (const [from, to] of VENDORED) {
     assert.ok(existsSync(join(root, "node_modules", from)), `${from} is installed`);
-    assert.ok(all.includes(`vendor/${to}`), `vendor/${to} is loaded by a page or module`);
+    const folder = `vendor/${to.split("/")[0]}/`;
+    assert.ok(all.includes(folder), `${folder} is loaded from by a page or module`);
   }
 });

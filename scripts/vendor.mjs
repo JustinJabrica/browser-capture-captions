@@ -14,7 +14,19 @@ import { fileURLToPath } from "node:url";
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
 // [from, under node_modules/] -> [to, under vendor/]
-export const VENDORED = [["mediabunny/dist/bundles/mediabunny.mjs", "mediabunny/mediabunny.mjs"]];
+export const VENDORED = [
+  // Reading, remuxing and writing media files.
+  ["mediabunny/dist/bundles/mediabunny.mjs", "mediabunny/mediabunny.mjs"],
+  // Transformers.js with ONNX Runtime Web's JavaScript inside it (transformers.web.js
+  // imports onnxruntime-web by name, which a page can't resolve), and the
+  // WebAssembly build it runs models with: the one pair src/deps.js names.
+  ["@huggingface/transformers/dist/transformers.js", "transformers/transformers.js"],
+  ["onnxruntime-web/dist/ort-wasm-simd-threaded.asyncify.mjs", "ort/ort-wasm-simd-threaded.asyncify.mjs"],
+  ["onnxruntime-web/dist/ort-wasm-simd-threaded.asyncify.wasm", "ort/ort-wasm-simd-threaded.asyncify.wasm"],
+  // WebRTC's voice activity detector (libfvad), for the webrtc-vad setting.
+  ["@echogarden/fvad-wasm/fvad.js", "fvad/fvad.js"],
+  ["@echogarden/fvad-wasm/fvad.wasm", "fvad/fvad.wasm"],
+];
 
 export function vendor({ quiet = false } = {}) {
   const out = join(root, "vendor");

@@ -6,5 +6,6 @@
 import { MEDIA_SOURCES } from "./sources-media.js";
 import { BENCH_SOURCES } from "./sources-bench.js";
 import { WEBCODECS_SOURCES } from "./sources-webcodecs.js";
+import { CAPTIONS_SOURCES } from "./sources-captions.js";
 
-export const SOURCES = { ...MEDIA_SOURCES, ...BENCH_SOURCES, ...WEBCODECS_SOURCES };
+export const SOURCES = { ...MEDIA_SOURCES, ...BENCH_SOURCES, ...WEBCODECS_SOURCES, ...CAPTIONS_SOURCES };

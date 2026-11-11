@@ -2448,3 +2448,45 @@ body.xp-on abbr.xp-term {
     height: 44px;
   }
 }
+
+/* Live captions, over the bottom of the preview: what was just said, with the
+   words still being worked out in a lighter colour. Long text keeps its end
+   in view. The media file's own player keeps its controls clear. */
+.captions {
+  position: absolute;
+  inset: auto 0 0 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  max-height: 5.9em;
+  margin: 0 auto 10px;
+  padding: 0 12px;
+  overflow: hidden;
+  font-size: clamp(14px, 2.1vw, 20px);
+  line-height: 1.4;
+  text-align: center;
+  pointer-events: none;
+}
+
+body[data-source="file"] .captions {
+  margin-bottom: 64px;
+}
+
+.captions > span {
+  align-self: center;
+  max-width: 44ch;
+  padding: 1px 8px;
+  border-radius: 4px;
+  background: rgb(0 0 0 / 0.72);
+  color: #ffffff;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.captions > span:empty {
+  display: none;
+}
+
+.captions .caption-interim {
+  color: #c9d3de;
+}

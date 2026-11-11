@@ -23,7 +23,7 @@ const LISTS = [
   "https://ublockorigin.github.io/uAssets/filters/privacy.txt",
 ];
 
-// Every file the bench and the guide can load.
+// Every file the bench and the guide can load, the libraries copied into vendor/ included.
 function files(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
     const p = join(dir, e.name);
@@ -36,7 +36,7 @@ const paths = [
   ...files(join(root, "page")),
   ...files(join(root, "src")),
   ...files(join(root, "test", "fixtures")),
-  join(root, "vendor", "mediabunny", "mediabunny.mjs"),
+  ...files(join(root, "vendor")),
 ].map((p) => relative(root, resolve(root, p)).replace(/\\/g, "/"));
 const urls = paths.map((p) => `http://127.0.0.1:8100/${p}`);
 

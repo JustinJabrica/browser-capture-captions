@@ -6,19 +6,18 @@ the web platform offers, and aims to caption what it hears as it records,
 with a speech model running in the page. Everything runs on this computer: no
 service, no upload, nothing to pay for.
 
-It joins two earlier studies:
+It joins two earlier studies, both private repositories of the same author:
 
-- [browser-media-capture](https://github.com/JustinJabrica/browser-media-capture)
-  (from commit `54a2d7b`): the capture bench, its recorders and its
-  measurements.
-- [automatic-speech-recognition-and-diarization](https://github.com/JustinJabrica/automatic-speech-recognition-and-diarization)
-  (from commit `7e293e0`): speech recognition in the page, with a local
-  Whisper model.
+- browser-media-capture (from commit `54a2d7b`): the capture bench, its
+  recorders and its measurements.
+- automatic-speech-recognition-and-diarization (from commit `7e293e0`):
+  speech recognition in the page, with a local Whisper model.
 
-**Where it stands.** The capture bench runs from this repo. Live captions,
-saved transcripts and subtitle files are being added in stages (see the
-[Roadmap](#roadmap)); until then the rest of this page describes the capture
-bench as it came over.
+**Where it stands.** The capture bench runs from this repo, and it captions
+what it hears while a source is open: see [Live captions](#live-captions).
+The captions aren't saved with a take yet. Saved transcripts and subtitle
+files come next (see the [Roadmap](#roadmap)). Most of this page still
+describes the capture bench as it came over.
 
 It's plain modern JavaScript, with no framework, bundler or build step.
 
@@ -26,10 +25,17 @@ It's plain modern JavaScript, with no framework, bundler or build step.
 
 ```sh
 npm install
+npm run download-model whisper-tiny.en    # optional: 90 MB into models/
 npm start
 ```
 
-Open <http://127.0.0.1:8100/> in Chrome, Edge or Firefox. If the page loads but nothing works, it says why at the top (opened as a file, a file that didn't load, or the error that stopped it). Blockers' lists include rules for any site by file name, so `npm run check:blockers` checks that none of the bench's files would be blocked: EasyPrivacy's `/analyse.js` rule once stopped the whole bench in a Firefox with uBlock Origin. Capture needs a
+Open <http://127.0.0.1:8100/> in Chrome, Edge or Firefox. Captions are on at
+first, so the first source you open loads a speech model: from `models/` if
+you downloaded one, otherwise 41 MB from the Hugging Face hub, which the
+browser then keeps. Turn `captions` off in the Captions tab for the capture
+bench alone.
+
+ If the page loads but nothing works, it says why at the top (opened as a file, a file that didn't load, or the error that stopped it). Blockers' lists include rules for any site by file name, so `npm run check:blockers` checks that none of the bench's files would be blocked: EasyPrivacy's `/analyse.js` rule once stopped the whole bench in a Firefox with uBlock Origin. Capture needs a
 secure context, and `http://127.0.0.1` and `http://localhost` count. To
 test on a phone, a tablet or another computer (Safari on an iPhone or a Mac
 among them), see
@@ -174,6 +180,108 @@ touching and holding anything explained offers the article, and tapping a
 setting's or measurement's name shows the short answer. The **Guide**
 (`guide.html`) has every article, by section, with search. The explainer
 engine is automatic-speech-recognition-and-diarization's.
+
+## Live captions
+
+While a source with sound is open, a speech model in the page captions it:
+the caption just finished in white over the preview, and the words still
+being worked out in a lighter colour. It runs in preview and while a take
+records. The sound never leaves the browser.
+
+```
+the session's PcmTap (one AudioWorklet, the AudioContext's own rate and clock)
+   ├─► levels, tap.wav, the WebCodecs recorder's fallback audio     as before
+   └─► tap-feed.js     mono, lost frames filled with silence, resampled to 16 kHz;
+        │              remembers the context frame of the first sample fed
+        ▼
+       Segmenter       20 ms frames, a speech detector, a pause ends an utterance
+        │
+        ▼
+       engine worker   Whisper, through Transformers.js on ONNX Runtime Web
+        │              (WebAssembly, or the encoder on WebGPU); one job at a time
+        ▼
+       segments        { start, end, transcript, confidence, latency }, in seconds
+                       of the audio fed, so: context frame = first frame + seconds × rate
+```
+
+The engine is automatic-speech-recognition-and-diarization's, without its
+speaker labels and server-side models. The one change of substance
+is where its audio comes from. That bench captured a track through its own
+AudioWorklet; here the engine is fed from the tap the take already uses, so
+there is one worklet and one clock, and every caption can be placed on the
+clock the take's start, pauses and end are counted on. That is what the next
+stage needs to put captions on the saved file's timeline.
+
+**Models.** The Captions tab lists the transcription models: Whisper tiny.en
+(41 MB loaded), base.en (77 MB), small.en and Distil-Whisper small.en,
+large-v3-turbo on WebGPU, and two CTC models. All but large-v3-turbo hear
+English only.
+
+- A model in `models/` loads from this server: `npm run download-model
+  <id>` puts it there, and `npm run download-model -- --list` shows what is
+  there. `models/` isn't committed.
+- Any other model is fetched from the Hugging Face hub the first time it's
+  used. The browser keeps it in its Cache Storage, so later loads need no
+  network.
+- The page asks the server which models it has (`models/index.json`) rather
+  than probing for files, so a model that isn't there costs no failed
+  requests.
+- `model` is `automatic` at first: base.en when it's on the server, else
+  tiny.en, the smallest download.
+
+**Settings** (the Captions tab; each has its explanation on the bench):
+`captions`, `model`, `device` (WebAssembly or WebGPU), the speech detector
+(the bench's energy rule, WebRTC VAD or Silero VAD) and its level or
+threshold, the pause that ends an utterance (800 ms), the longest utterance
+(20 s), and interim text and how often it's refreshed. They are read when a
+source opens. A change of model or device restarts the engine.
+
+**The Captions chip** in the header shows the model's state: loading with its
+progress, then the model and its thread count. One thread means the page
+isn't cross-origin isolated, which costs about half the speed.
+
+### What the caption tests have shown so far
+
+All headless, on one Windows desktop, with fake devices. Headless browsers
+are throttled on Windows, so the timings are for comparing runs, not for
+judging the model's speed.
+
+- **It works in Edge 156 and Firefox 160** on WebAssembly with four threads.
+  Edge's fake microphone plays `fox.wav` on a loop, and every loop is
+  captioned "The quick brown fox jumps over the lazy dog."; in both, the
+  media-file source playing `two-sentences.wav` is captioned "Speech
+  recognition now works in Firefox."
+- **Caption times follow the audio.** In Edge the same sentence was heard at
+  0.56 s and again at 5.42 s, in a file that repeats every 4.83 s.
+- **Final captions were late in headless Edge**: 2.0 to 3.9 s after each
+  utterance ended, with tiny.en taking about 2.0 s over a 2.7 s utterance
+  while the fake camera's preview ran. Interim text often didn't arrive at
+  all before the final one. Firefox showed interim text 0.5 s after the model
+  was ready. Real conditions haven't been measured.
+- **Loading tiny.en from the server** took 1.0 s in Firefox and 2.3 to 4.8 s
+  in Edge.
+- **Loading it from the Hugging Face hub works on a cross-origin isolated
+  page** (`Cross-Origin-Embedder-Policy: require-corp`), in both browsers:
+  the hub's responses carry CORS headers. One check each: ready 6.8 s after
+  the source opened in Edge and 5.9 s in Firefox, after 22 requests to
+  `huggingface.co` and 4 to its CDN. A second load in the same profile made
+  no request to another host and took 2.5 s (Edge) and 2.9 s (Firefox).
+- **With captions off, no model is loaded**: the engine stays unloaded
+  through every capture test.
+
+### Captions' limits, for now
+
+- Captions aren't kept: nothing of them is saved with a take, and closing the
+  source drops them. That is the next stage.
+- A media file played without recording closes when it ends, so its last
+  sentence's caption, which needs the pause after it, is dropped.
+- English only, in practice.
+- Whisper isn't a streaming model. A final caption can't come sooner than the
+  pause that ends its utterance plus the model's time over it.
+- The energy detector can take steady noise for speech.
+- Silero VAD has to be on the server (`npm run download-model silero-vad`):
+  its file is a raw download the hub doesn't serve in this form.
+- Safari hasn't been tried.
 
 ## How a take works
 
@@ -700,31 +808,62 @@ src/sound.js                  loudness (BS.1770), noise floor, bandwidth, stretc
 src/pattern.js                the test pattern's flash and frame-number cells (no DOM)
 src/wav.js                    WAV writing and reading (no DOM)
 src/capabilities.js           the Browser view's report
+src/deps.js                   where the vendored libraries and the models are, from this file's own address
+page/captions.js              live captions: the overlay, the Captions chip, starting and stopping the engine
+src/captions/tap-feed.js      the tap's blocks to 16 kHz mono, with their place on the context's clock (no DOM)
+src/speech/core.js            the speech engine's settings, the worker's client and job queue, transcript clean-up
+src/speech/engine-worker.js   the worker that hosts the model: loading, WebGPU with its fallback, word times
+src/speech/asr-engine.js, whisper-engine.js, ctc-engine.js  the transcription engines (they run in Node too)
+src/speech/audio.js           the resampler, the Segmenter (utterances), decoding and chunking whole files
+src/speech/vad.js, vad-worker.js  the speech detectors: energy, WebRTC VAD, Silero VAD
+src/speech/transcriber.js     live transcription: interim and final segments, in order, with their times
+src/speech/registry.js        every model and detector the bench can select, as data
+src/speech/model-env.js       points Transformers.js at this server or the hub, one model at a time
+src/speech/align/             word times by forced alignment (wav2vec2)
 server.mjs                    static server; HTTPS=1 for other devices
+scripts/vendor.mjs            copies the libraries the pages load from node_modules into vendor/ (after npm install)
+scripts/download-model.mjs    speech models into models/, from the registry
 scripts/make-cert.mjs         a local certificate authority, and the server's certificate it issues, for HTTPS=1
 scripts/make-fixtures.mjs     the test pattern as .y4m, for Chromium's fake camera
 scripts/check-sources.mjs     checks every link the explanations cite
 scripts/check-blockers.mjs    checks that no ad or tracker blocker's list would block the bench's files
 scripts/install-chrome-for-testing.mjs  Chrome for Testing into Puppeteer's cache, for the end-to-end tests
-test/unit/                    node --test: WAV, pattern, metrics, sound, constraints, types, codecs, probing
+test/unit/                    node --test: WAV, pattern, metrics, sound, constraints, types, codecs, probing,
+                              the speech engine's pure parts, the tap feed, what the pages load
+test/engine.test.mjs          the speech model in Node, on the fixtures
 test/browser.test.mjs         end-to-end, in real browsers
 test/fixtures/                fox.wav and two-sentences.wav (from automatic-speech-recognition-and-diarization)
 ```
 
-The only runtime dependency is [Mediabunny](https://mediabunny.dev/), for
-reading and remuxing the recorded files, and for writing the WebCodecs
-recorder's packets into a file. The pages load it from `vendor/`, which
-`scripts/vendor.mjs` fills from the installed package after every
-`npm install`. `vendor/` isn't committed. Nothing in the browser asks for a
-path under `node_modules/`, so the same pages work from a static host.
+There are three runtime dependencies:
+
+- [Mediabunny](https://mediabunny.dev/), for reading and remuxing the
+  recorded files, and for writing the WebCodecs recorder's packets into a
+  file.
+- [Transformers.js](https://huggingface.co/docs/transformers.js/index), with
+  ONNX Runtime Web inside it, which runs the speech model.
+- [@echogarden/fvad-wasm](https://www.npmjs.com/package/@echogarden/fvad-wasm),
+  WebRTC's voice activity detector as WebAssembly.
+
+The pages load them from `vendor/` (30 MB, most of it ONNX Runtime's
+WebAssembly build), which `scripts/vendor.mjs` fills from the installed
+packages after every `npm install`. `vendor/` isn't committed. Nothing in
+the browser asks for a path under `node_modules/`, so the same pages work
+from a static host.
 
 ## Testing
 
 ```sh
-# Pure code (WAV, the test pattern, metrics, sound, constraints, MIME types, probing); no browser
+# Pure code (WAV, the test pattern, metrics, sound, constraints, MIME types, probing,
+# the speech engine's registry, resampler, segmenter and detectors, the tap feed); no browser
 npm run test:unit
 
-# End to end in a real browser: start the server, then in another terminal
+# The speech model itself, in Node: needs a model in models/
+npm run download-model whisper-tiny.en
+npm run test:engine
+
+# End to end in a real browser: start the server, then in another terminal.
+# The caption tests need whisper-tiny.en in models/, and are skipped without it.
 npm start
 npm test               # Firefox
 npm run test:edge      # Microsoft Edge
@@ -752,6 +891,9 @@ in for the camera and microphone, and prompts are granted without asking.
 - Its fake camera plays the test pattern, which the tests write to
   `test/output/` when it's missing (`npm run fixtures`).
 - Firefox's fake devices play a tone and a coloured picture.
+- The capture tests run with captions off, as the bench they came from did.
+  The caption tests turn them on: Chromium captions its fake microphone, and
+  every browser captions `two-sentences.wav` played as a media file.
 
 The tests look for each browser in its usual install location. These
 environment variables change that and other settings:
@@ -771,8 +913,8 @@ environment variables change that and other settings:
   microphones, tab and screen audio, and Safari on macOS and iOS. Fill in the
   support table from the saved takes.
 - **Captions**, in stages:
-  1. Live captions over the preview, from a Whisper model in the page, fed
-     by the same audio tap the takes use.
+  1. Done: live captions over the preview, from a Whisper model in the
+     page, fed by the same audio tap the takes use.
   2. A timed transcript saved with each take, on the saved file's own
      timeline, and `.vtt`, `.srt`, `.txt` and `.json` downloads.
   3. The subtitles written into the saved file as a track.

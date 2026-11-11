@@ -251,13 +251,14 @@ const ANALYSIS_PARAMS = [
 
 // Captions: the speech engine's settings (page/captions.js, src/speech/).
 const CAPTION_PARAMS = [
+  { section: "Live captions" },
   { key: "captions", type: "switch", def: true, desc: "Caption the source's sound as it plays, with a speech model that runs in this page. Nothing is sent anywhere." },
   {
     key: "ccModel",
     label: "model",
     type: "select",
     def: "auto",
-    options: [["auto", "automatic: base.en if it's on this server, else tiny.en"], ...ofKind("asr").map((m) => [m.id, `${m.label} · ${m.loadMB?.wasm ?? m.loadMB?.webgpu} MB`])],
+    options: [["auto", "automatic: base.en if it's here, else tiny.en"], ...ofKind("asr").map((m) => [m.id, `${m.label} · ${m.loadMB?.wasm ?? m.loadMB?.webgpu} MB`])],
     desc: "The speech model. Bigger models make fewer mistakes and take longer; all of these hear English only, except large-v3-turbo. One that isn't on this server is downloaded from the Hugging Face hub the first time, and the browser keeps it.",
   },
   {
@@ -272,6 +273,21 @@ const CAPTION_PARAMS = [
     tag: navigator.gpu ? undefined : "not supported here",
     desc: "Where the model runs. WebAssembly works everywhere; WebGPU runs Whisper's encoder on the graphics card, which is faster only on some machines, and falls back to WebAssembly if it fails.",
   },
+  { key: "ccInterim", label: "interim text", type: "switch", def: true, desc: "Show a first guess while someone is still speaking, by transcribing the utterance so far again and again. Off leaves the processor to the recorder until each utterance ends." },
+  { key: "ccInterimIntervalMs", label: "interim every", type: "number", def: 500, unit: "ms", min: 100, step: 50, desc: "How often the utterance so far is transcribed again for the interim text, at most." },
+  {
+    key: "ccWords",
+    label: "word times",
+    type: "select",
+    def: "off",
+    options: [
+      ["off", "off (subtitles are timed by estimate)"],
+      ["whisper", "from Whisper (its timestamped export)"],
+      ["align", "by forced alignment (wav2vec2, 95 MB more)"],
+    ],
+    desc: "Time every word of a final caption, so subtitles can break exactly between words. Either way loads more than the model alone, and adds to each caption's delay.",
+  },
+  { section: "Finding the speech" },
   {
     key: "ccVad",
     label: "speech detector",
@@ -288,20 +304,7 @@ const CAPTION_PARAMS = [
   { key: "ccVadThreshold", label: "Silero threshold", type: "range", def: 0.5, min: 0.05, max: 0.95, step: 0.05, desc: "Silero counts a moment as speech when its probability reaches this." },
   { key: "ccSilenceMs", label: "pause that ends an utterance", type: "number", def: 800, unit: "ms", min: 200, step: 50, desc: "This much quiet after speech ends the utterance, and its final caption follows. Shorter gives captions sooner and cuts sentences in more places." },
   { key: "ccMaxSegmentMs", label: "longest utterance", type: "number", def: 20000, unit: "ms", min: 2000, max: 28000, step: 500, desc: "Speech without a pause is cut after this long. Whisper hears 30 s at a time and drops what's past that." },
-  { key: "ccInterim", label: "interim text", type: "switch", def: true, desc: "Show a first guess while someone is still speaking, by transcribing the utterance so far again and again. Off leaves the processor to the recorder until each utterance ends." },
-  { key: "ccInterimIntervalMs", label: "interim every", type: "number", def: 500, unit: "ms", min: 100, step: 50, desc: "How often the utterance so far is transcribed again for the interim text, at most." },
-  {
-    key: "ccWords",
-    label: "word times",
-    type: "select",
-    def: "off",
-    options: [
-      ["off", "off (subtitles are timed by estimate)"],
-      ["whisper", "from Whisper (its timestamped export)"],
-      ["align", "by forced alignment (wav2vec2, 95 MB more)"],
-    ],
-    desc: "Time every word of a final caption, so subtitles can break exactly between words. Either way loads more than the model alone, and adds to each caption's delay.",
-  },
+  { section: "Second pass" },
   { key: "ccFinalAuto", label: "second pass after each take", type: "switch", def: false, desc: "Transcribe every take again once it's saved, from its finished recording. Otherwise a take's card has a button for it." },
   {
     key: "ccFinalModel",
@@ -323,6 +326,7 @@ const CAPTION_PARAMS = [
     ],
     desc: "Whether the second pass times every word, whatever the live captions do.",
   },
+  { section: "Subtitles" },
   { key: "ccCueChars", label: "subtitle line", type: "number", def: 42, unit: "characters", min: 16, max: 80, step: 1, desc: "The longest line of a subtitle. Read when a take's subtitles are made: for playback and for each download." },
   { key: "ccCueLines", label: "subtitle lines", type: "number", def: 2, min: 1, max: 4, step: 1, desc: "The most lines a subtitle may have." },
   { key: "ccCueSeconds", label: "subtitle on screen", type: "number", def: 6, unit: "s", min: 1, max: 20, step: 0.5, desc: "The longest a subtitle stays up before the next takes over." },

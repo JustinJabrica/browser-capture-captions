@@ -188,6 +188,7 @@ export function setupDrop(overlay, onFile, onReject) {
 // groups start from group.applied (what the page loaded with) and change only
 // through Apply & reload, which calls group.onApply(values).
 //
+// A group's params may have { section: "name" } entries among them: headings.
 // A param is { key, type, def, initial?, desc?, only?, tag?, ... }, where
 // type is switch, text, select, number or range. def is the API default
 // (shown, and restored by Reset); initial is the bench's first-visit value.
@@ -226,7 +227,7 @@ export function createParams({ tabList, panelHost, groups, storageKey, onChange 
     panelHost.append(panel);
 
     const groupFields = [];
-    for (const p of [...group.params, ...(group.paths ?? [])]) {
+    for (const p of [...group.params, ...(group.paths ?? [])].filter((p) => p.key)) {
       const el = panel.querySelector(`[data-key="${p.key}"]`);
       const field = { p, group, el, ...accessors(p, el) };
       if (group.reload) field.applied = group.applied?.[p.key] ?? p.def;
@@ -320,8 +321,11 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const attr = (name, value) => (value == null ? "" : ` ${name}="${esc(value)}"`);
 
 function paramHTML(p) {
+  // { section: "…" } among a group's params is a heading over those that follow.
+  if (p.section) return `<h3 class="param-section">${esc(p.section)}</h3>`;
   const id = `p-${p.key}`;
-  const block = ["text", "range"].includes(p.type);
+  // A text box, a slider, or a list whose choices are long, goes under its name, across the row.
+  const block = ["text", "range"].includes(p.type) || (p.type === "select" && p.options.some((o) => String(o[1]).length > 26));
   const key = `<label class="key" for="${id}">${p.label ?? p.key}</label>`;
   const only = p.only ? ` only ${p.only.map((s) => `only-${s}`).join(" ")}` : "";
   const def =

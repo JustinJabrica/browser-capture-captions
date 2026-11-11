@@ -268,40 +268,54 @@ const when = (ms) => new Date(ms).toLocaleString([], { month: "short", day: "num
 export function cardHTML(t, { deletable = false } = {}) {
   const has = t.media ?? {};
   const fileButton = (key, label, title) =>
-    has[key] ? `<button type="button" class="btn sm" data-download="${key}" title="${esc(title)}">${icon("download")}${label}</button>` : "";
+    has[key] ? `<button type="button" class="btn sm" data-download="${key}" title="${esc(title)}">${label}</button>` : "";
   const ext = t.files?.ext ?? "bin";
   // Sound or picture on its own, copied out of the recording when clicked: only for a file with both.
   const kinds = new Set((t.analysis?.file?.probe?.tracks ?? []).map((x) => x.type));
   const solo = (kind, title) =>
-    has.file && kinds.has("audio") && kinds.has("video") ? `<button type="button" class="btn sm" data-download="${kind}" title="${esc(title)}">${icon("download")}${kind} only</button>` : "";
+    has.file && kinds.has("audio") && kinds.has("video") ? `<button type="button" class="btn sm" data-download="${kind}" title="${esc(title)}">${kind} only</button>` : "";
   // Subtitles and the transcript, from the transcript chosen: the live captions' or the second pass's.
   const tr = t.transcripts ?? {};
   const chosen = tr[tr.chosen] ? tr.chosen : tr.final ? "final" : tr.live ? "live" : null;
   const spoken = tr[chosen]?.stats?.segments > 0;
   const pick = (kind, label) => `<label><input type="radio" name="transcript-${esc(t.id)}" value="${kind}"${chosen === kind ? " checked" : ""} /><span>${label}</span></label>`;
-  const textButton = (key, label, title) => (spoken ? `<button type="button" class="btn sm" data-download="${key}" title="${esc(title)}">${icon("download")}<span class="label">${label}</span></button>` : "");
+  const textButton = (key, label, title) => (spoken ? `<button type="button" class="btn sm" data-download="${key}" title="${esc(title)}"><span class="label">${label}</span></button>` : "");
+  // Each group of downloads with a name, left out when it has none.
+  const group = (label, ...buttons) => (buttons.some(Boolean) ? `<div class="dl-group"><span class="dl-label">${label}</span>${buttons.join("")}</div>` : "");
   return `
     <article class="take" data-id="${esc(t.id)}">
       <header class="block-head take-head">
         <h3>${esc(t.name)}</h3>
         <span class="meta">${esc(t.env?.browser ?? "")} · ${when(t.createdAt)}${t.imported ? ' · <span class="tag">imported, no files</span>' : ""}</span>
-        <div class="actions">
-          ${fileButton("file", `.${ext}`, "The recording, as the browser wrote it")}
-          ${fileButton("seekable", `seekable .${ext}`, "The same packets, rewritten so the file declares its duration")}
-          ${solo("audio", "The recording's sound on its own, its packets copied as they are")}
-          ${solo("video", "The recording's picture on its own, its packets copied as they are")}
-          ${fileButton("tap", "tap.wav", "The lossless tap, at the context's rate, every channel")}
-          ${fileButton("pcm16k", "16k.wav", "The recording's audio as 16 kHz mono, ready for transcription")}
-          ${has.file ? textButton("subtitled", "with subtitles", "The recording with its subtitles written into it as a track, its packets copied as they are") : ""}
-          ${has.file && kinds.has("video") ? textButton("burned", "captions burned in", "The recording with its subtitles drawn into the picture, which is encoded again") : ""}
-          ${textButton("vtt", ".vtt", "Subtitles as WebVTT, timed on the recording")}
-          ${textButton("srt", ".srt", "Subtitles as SubRip")}
-          ${textButton("txt", ".txt", "The transcript as text, an utterance a line, with its times")}
-          ${textButton("transcript", "transcript.json", "The transcript with its times, the model and settings, and how it was placed on the recording")}
-          <button type="button" class="btn sm" data-download="report">${icon("download")}report.json</button>
-          ${deletable ? `<button type="button" class="btn sm" data-delete>${icon("clear")}<span class="label">Delete</span></button>` : ""}
-        </div>
+        ${deletable ? `<div class="actions"><button type="button" class="btn sm" data-delete>${icon("clear")}<span class="label">Delete</span></button></div>` : ""}
       </header>
+      <div class="downloads">
+        <span class="dl-title">${icon("download")}Download</span>
+        ${group(
+          "Recording",
+          fileButton("file", `.${ext}`, "The recording, as the browser wrote it"),
+          fileButton("seekable", `seekable .${ext}`, "The same packets, rewritten so the file declares its duration"),
+          solo("audio", "The recording's sound on its own, its packets copied as they are"),
+          solo("video", "The recording's picture on its own, its packets copied as they are"),
+        )}
+        ${group(
+          "Sound",
+          fileButton("tap", "tap.wav", "The lossless tap, at the context's rate, every channel"),
+          fileButton("pcm16k", "16k.wav", "The recording's audio as 16 kHz mono, ready for transcription"),
+        )}
+        ${group(
+          "With captions",
+          has.file ? textButton("subtitled", "with subtitles", "The recording with its subtitles written into it as a track, its packets copied as they are") : "",
+          has.file && kinds.has("video") ? textButton("burned", "captions burned in", "The recording with its subtitles drawn into the picture, which is encoded again") : "",
+        )}
+        ${group("Subtitles", textButton("vtt", ".vtt", "Subtitles as WebVTT, timed on the recording"), textButton("srt", ".srt", "Subtitles as SubRip"))}
+        ${group(
+          "Transcript",
+          textButton("txt", ".txt", "The transcript as text, an utterance a line, with its times"),
+          textButton("transcript", "transcript.json", "The transcript with its times, the model and settings, and how it was placed on the recording"),
+        )}
+        ${group("Measurements", `<button type="button" class="btn sm" data-download="report" title="Everything measured about this take, as JSON">report.json</button>`)}
+      </div>
       ${has.file ? `<video class="take-video" controls playsinline preload="metadata"></video>` : ""}
       ${
         t.analysis?.overview

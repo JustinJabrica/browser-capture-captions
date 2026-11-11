@@ -150,7 +150,7 @@ export const CAPTIONS_TOPICS = {
   "live-transcript": {
     section: "captions",
     name: "Transcript (live)",
-    short: "Every utterance heard since the source opened, with its times, under the preview. A row in a lighter colour is still being worked out.",
+    short: "Every utterance heard since the source opened, with its times, beside the preview. A row in a lighter colour is still being worked out.",
     what: "The same captions as over the preview, kept in a list. The times count from the first sound the captions heard after the source opened, not from a take's start: a take's own transcript, on its card, is on the take's times. The list stays after the source closes, and is cleared when the next one opens.",
     related: ["live-captions", "take-transcript", "event-caption"],
   },

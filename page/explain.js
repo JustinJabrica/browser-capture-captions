@@ -109,7 +109,7 @@ export function setupExplainers({ bench }) {
   // On a touch screen, holding an explained thing opens the menu, not the system's text selection or link callout.
   const TARGETS = RULES.map(([sel]) => sel).join(", ");
   style.textContent =
-    `body.xp-on :is(${MARK.join(", ")}) { text-decoration: underline dotted var(--ink-3); text-underline-offset: 3px; text-decoration-thickness: 1px; }` +
+    `body.xp-on :is(${MARK.join(", ")}) { text-decoration: underline dotted color-mix(in srgb, var(--ink-3) 45%, transparent); text-underline-offset: 3px; text-decoration-thickness: 1px; }` +
     `@media (pointer: coarse) { :is(${TARGETS}) { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; } }`;
   document.head.append(style);
 

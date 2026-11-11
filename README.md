@@ -242,7 +242,7 @@ read when a source opens. A change of model, device or word times restarts
 the engine. Three more shape a take's subtitles (the longest line, the most
 lines, the longest time on screen) and are read when subtitles are made.
 
-Under the preview, **Transcript** lists every utterance heard since the
+Beside the preview, **Transcript** lists every utterance heard since the
 source opened, with its times.
 
 **The Captions chip** in the header shows the model's state: loading with its

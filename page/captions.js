@@ -1,6 +1,6 @@
 // Live captions on the bench: runs the speech engine on the open source's
 // audio tap, shows what it hears over the preview and in the transcript
-// under it, reports the model's state in the app bar's Captions chip, and
+// beside it, reports the model's state in the app bar's Captions chip, and
 // makes each take's transcripts: the captions said while it recorded, placed
 // on the saved file's timeline; and, when asked, a second pass over the
 // finished recording.
@@ -236,7 +236,7 @@ export function createCaptions({ overlay, list, chip, log }) {
   }
 
   // Ends the run at once (the source is closing): what isn't delivered yet is
-  // dropped. The transcript under the preview stays, to read.
+  // dropped. The transcript beside the preview stays, to read.
   function stop() {
     const ending = run;
     run = null;

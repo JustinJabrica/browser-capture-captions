@@ -170,7 +170,7 @@ test("Resampler: what's above the new rate's half is filtered out", () => {
 async function utterances(audio, { detector = null, cutAt = [], step = 1600 } = {}) {
   const found = [];
   const segmenter = new Segmenter(
-    { sound() {}, speechStart() {}, progress() {}, discard() {}, segment: (id, pcm, start, how) => found.push(Object.assign([start / SAMPLE_RATE, (start + pcm.length) / SAMPLE_RATE], { cut: how.cut })) },
+    { sound() {}, speechStart() {}, progress() {}, discard() {}, segment: (id, pcm, start, how) => found.push(Object.assign([start / SAMPLE_RATE, (start + pcm.length) / SAMPLE_RATE], how)) },
     { silenceMs: 800, maxSegmentMs: 20000, detector },
   );
   const cuts = [...cutAt];
@@ -202,12 +202,37 @@ test("Segmenter.cut ends the utterance in progress there, and listening carries 
   const found = await utterances(audio, { cutAt: [middle] });
   assert.equal(found.length, 3, JSON.stringify(found));
   assert.deepEqual(found.map((u) => u.cut), [true, false, false], "only the utterance the cut ended says so");
+  assert.deepEqual(found.map((u) => u.continued), [false, true, false], "and only the rest of that sentence began mid-speech");
   assert.ok(Math.abs(found[0][0] - first[0]) < 0.001 && Math.abs(found[0][1] - middle) <= 0.1, `the first part ends at the cut: ${JSON.stringify(found[0])}`);
   // The rest of the sentence is heard as its own utterance, starting no earlier than the cut less the pre-roll.
   assert.ok(found[1][0] >= middle - 0.3 - 0.1 && Math.abs(found[1][1] - first[1]) < 0.05, JSON.stringify(found[1]));
   assert.ok(Math.abs(found[2][0] - second[0]) < 0.05 && Math.abs(found[2][1] - second[1]) < 0.05, "the second sentence is untouched");
-  // A cut in silence does nothing.
-  assert.equal((await utterances(audio, { cutAt: [first[1] + 0.5] })).length, 2);
+  // A cut in silence ends nothing, and what follows isn't marked.
+  const quiet = await utterances(audio, { cutAt: [first[1] + 1] });
+  assert.deepEqual(quiet.map((u) => [u.cut, u.continued]), [[false, false], [false, false]]);
+  // Nor is a cut in the pause that was about to end the utterance: the speech had already stopped.
+  const waiting = await utterances(audio, { cutAt: [first[1] + 0.4] });
+  assert.deepEqual(waiting.map((u) => [u.cut, u.continued]), [[false, false], [false, false]]);
+  assert.ok(Math.abs(waiting[0][1] - first[1]) < 0.05, "and the utterance ends where it would have");
+});
+
+test("Segmenter.cut forgets what came before it: a burst just before the cut can't start or stretch an utterance", async () => {
+  // 160 ms of loud sound with a cut 100 ms into it, then quiet, then speech half a second later: what
+  // Firefox's first AudioContext block, smeared by the resampler, did to a media file's first caption.
+  const speech = await fixture("fox.wav");
+  const onset = (await utterances(speech))[0][0];
+  const burst = Float32Array.from({ length: 2560 }, (_, i) => 0.3 * Math.sin(i / 3));
+  const audio = new Float32Array(burst.length + speech.length);
+  audio.set(burst);
+  audio.set(speech, burst.length);
+  const uncut = await utterances(audio, { step: 320 });
+  const cut = await utterances(audio, { cutAt: [0.1], step: 320 });
+  // Without the cut the burst starts an utterance, which the sentence then joins.
+  assert.deepEqual([uncut.length, uncut[0][0]], [1, 0], JSON.stringify(uncut));
+  // With it, the burst's run of sound is forgotten, and the sentence starts where it does.
+  assert.equal(cut.length, 1);
+  assert.ok(Math.abs(cut[0][0] - (0.16 + onset)) < 0.05, `with the cut the sentence starts at ${cut[0][0]} s (its own start is ${(0.16 + onset).toFixed(2)} s)`);
+  assert.deepEqual([cut[0].cut, cut[0].continued], [false, false]);
 });
 
 test("chunkBounds cuts long audio at its quietest moments, and covers all of it", () => {

@@ -101,9 +101,9 @@ test("placeSegments: a segment that crosses a boundary is clipped to it, and say
   // One the feed cut exactly at the boundary loses no time, and is marked all the same: the speech went on.
   const [cut] = placeSegments([seg(1, 3, 4, { cut: true })], clock, take());
   assert.deepEqual([cut.start, cut.end, cut.clipped], [1, 2, true]);
-  // So is one that starts right where the take began or resumed: its beginning was said outside the take.
-  const resumed = placeSegments([seg(1, 2.02, 3), seg(2, 8.01, 9), seg(3, 9.5, 10.5)], clock, take());
-  assert.deepEqual(resumed.map((p) => [p.id, p.clipped ?? false]), [[1, true], [2, true], [3, false]]);
+  // So is one that began at a cut with the speech already going: its beginning was said outside the take.
+  const resumed = placeSegments([seg(1, 2, 3, { continued: true }), seg(2, 8, 9), seg(3, 9.5, 10.5)], clock, take());
+  assert.deepEqual(resumed.map((p) => [p.id, p.clipped ?? false]), [[1, true], [2, false], [3, false]]);
 });
 
 test("placeSegments: words move with their segment, and words outside the take are dropped", () => {

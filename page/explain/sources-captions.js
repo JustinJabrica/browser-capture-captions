@@ -60,7 +60,12 @@ const WHISPER_TIMING = { title: "openai/whisper: timing.py (word timestamps from
 const CURRENT_FRAME = { title: "AudioWorkletGlobalScope: currentFrame property", by: "MDN Web Docs (Mozilla)", where: "MDN", url: "https://developer.mozilla.org/en-US/docs/Web/API/AudioWorkletGlobalScope/currentFrame" };
 const WEB_AUDIO = { title: "Web Audio API 1.1", by: "W3C Audio Working Group", where: "W3C", url: "https://www.w3.org/TR/webaudio/" };
 
+const MATROSKA_CODECS = { title: "Matroska Codec Mappings (S_TEXT/WEBVTT)", by: "Matroska.org", where: "matroska.org", url: "https://www.matroska.org/technical/codec_specs.html" };
+const MEDIABUNNY_SUBTITLES = { title: "Media sources: subtitle sources", by: "Mediabunny", where: "mediabunny.dev", url: "https://mediabunny.dev/guide/media-sources" };
+const MEDIABUNNY_CONVERSION = { title: "Converting media files", by: "Mediabunny", where: "mediabunny.dev", url: "https://mediabunny.dev/guide/converting-media-files" };
+
 export const CAPTIONS_SOURCES = {
+  "download-subtitled": [MEDIABUNNY_SUBTITLES, MEDIABUNNY_CONVERSION, MATROSKA_CODECS, WEBVTT],
   "take-transcript": [WEBVTT, TRACK],
   "captions-on-the-timeline": [CURRENT_FRAME, WEB_AUDIO],
   ccWords: [WHISPER_TIMING, WHISPERX, WHISPER],

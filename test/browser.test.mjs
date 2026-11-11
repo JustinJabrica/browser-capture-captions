@@ -23,6 +23,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PATTERN_Y4M, writePattern } from "../scripts/make-fixtures.mjs";
+import { matroskaSubtitles } from "./lib/matroska.mjs";
 
 const NAME = process.argv[2] ?? "firefox";
 const BASE = process.env.BASE_URL ?? "http://127.0.0.1:8100/";
@@ -920,6 +921,123 @@ if (!hasModel) {
       await page.evaluate(() => (HTMLAnchorElement.prototype.click = window.testClick));
     }
   });
+
+  // A take's recording with its subtitles written into it, made in the page as the card's button makes it,
+  // with the checks Mediabunny can do there. bytes: the copy, for reading its subtitle track here.
+  const embedded = (id) =>
+    page.evaluate(async (id) => {
+      const [{ takeMedia, takeTranscripts }, { embedSubtitles, hasMarker }, { asVtt, toCues }, { probe }] = await Promise.all([import("./page/takes.js"), import("./src/captions/embed.js"), import("./src/captions/subtitles.js"), import("./src/container.js")]);
+      const take = (await (await import("./page/takes.js")).listTakes()).find((t) => t.id === id);
+      const { file } = await takeMedia(id);
+      const { live } = await takeTranscripts(id);
+      const cues = toCues(live.segments, { duration: take.analysis.file.probe.duration });
+      const made = await embedSubtitles(file, asVtt(cues));
+      const brief = async (blob) => {
+        const p = (await probe(blob)).probe;
+        return { container: p.container, declared: p.declaredDuration, duration: p.duration, tracks: p.tracks.map((t) => ({ type: t.type, codec: t.codec, packets: t.packets, keyFrames: t.keyFrames ?? null, first: t.firstTimestamp })) };
+      };
+      const video = Object.assign(document.createElement("video"), { muted: true, preload: "auto", src: URL.createObjectURL(made.blob) });
+      const plays = await new Promise((resolve) => {
+        video.oncanplay = () => resolve(true);
+        video.onerror = () => resolve(video.error?.message || "error");
+        setTimeout(() => resolve("timed out"), 10000);
+      });
+      URL.revokeObjectURL(video.src);
+      const bytes = new Uint8Array(await made.blob.arrayBuffer());
+      let binary = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      return {
+        cues: cues.map((c) => ({ start: c.start, end: c.end, text: c.text })),
+        made: { container: made.container, ext: made.ext, type: made.blob.type, size: made.blob.size, marker: made.marker, hasMarker: await hasMarker(made.blob, made.marker), hasText: await hasMarker(made.blob, cues[0].lines[0]), tracks: made.tracks },
+        originalSize: file.size,
+        hadMarker: await hasMarker(file, made.marker),
+        before: await brief(file),
+        after: await brief(made.blob),
+        plays,
+        base64: btoa(binary),
+      };
+    }, id);
+  // The copy holds the recording's own tracks, packet for packet, and one more.
+  function checkEmbedded(r) {
+    assert(r.made.hasMarker && !r.hadMarker, `the copy ${r.made.hasMarker ? "has" : "lacks"} a ${r.made.marker} track; the recording ${r.hadMarker ? "had one already" : "had none"}`);
+    assert(r.made.hasText, "the first subtitle's text isn't in the copy");
+    assert(r.after.tracks.length === r.before.tracks.length, `${r.after.tracks.length} tracks read back from ${r.before.tracks.length}`);
+    for (const original of r.before.tracks) {
+      const copy = r.after.tracks.find((t) => t.type === original.type);
+      assert(copy && copy.codec === original.codec && copy.packets === original.packets && copy.keyFrames === original.keyFrames, `${original.type}: ${JSON.stringify(copy)} from ${JSON.stringify(original)}`);
+      assert(near(copy.first, original.first, 0.0025), `${original.type} starts at ${copy.first} s, from ${original.first} s: the subtitles would be off by the difference`);
+    }
+    assert(near(r.after.duration, r.before.duration, 0.01), `the copy lasts ${r.after.duration} s, the recording ${r.before.duration} s`);
+    assert(r.after.declared > 0, "the copy doesn't declare its duration");
+    assert(r.plays === true, `the copy doesn't play here: ${r.plays}`);
+    assert(r.made.size > r.originalSize - 4096 && r.made.size < r.originalSize + 8192, `${r.made.size} bytes from ${r.originalSize}`);
+  }
+  // A WebM or Matroska copy's subtitle track, read from its bytes: the same cues, at the same times.
+  function checkCues(r) {
+    const read = matroskaSubtitles(Buffer.from(r.base64, "base64"));
+    assert(read.cues, `no S_TEXT/WEBVTT track among ${read.codecs.join(", ")}`);
+    assert(read.language === "eng", `the track's language is ${read.language}`);
+    assert(read.cues.length === r.cues.length, `${read.cues.length} cues in the file, ${r.cues.length} subtitles`);
+    for (const [i, cue] of r.cues.entries()) {
+      const got = read.cues[i];
+      assert(near(got.start, cue.start, 0.0015) && near(got.end, cue.end, 0.0015) && got.text === cue.text, `cue ${i + 1} in the file: ${got.start}-${got.end} s "${got.text}"; the subtitle: ${cue.start}-${cue.end} s "${cue.text}"`);
+    }
+    return read;
+  }
+
+  await test("subtitles in the file: the recording's packets as they were, and a WebVTT track with every cue at its time", async () => {
+    // The media file take: WebM where MediaRecorder writes it for sound alone, Ogg (so copied into WebM) in Firefox.
+    const take = await page.evaluate(() => window.captureBench.latest);
+    const r = await embedded(take.id);
+    checkEmbedded(r);
+    assert(r.made.container === "webm" && r.made.type === "audio/webm", `${r.before.container} was written as ${r.made.container} (${r.made.type})`);
+    const read = checkCues(r);
+    // And the card's button makes the same file.
+    await page.evaluate(() => {
+      window.testDownloads = [];
+      window.testClick = HTMLAnchorElement.prototype.click;
+      HTMLAnchorElement.prototype.click = function () {
+        window.testDownloads.push(fetch(this.href).then((x) => x.blob()).then((blob) => ({ name: this.download, size: blob.size, type: blob.type })));
+      };
+    });
+    try {
+      await page.click('#latest [data-download="subtitled"]');
+      await page.waitForFunction(() => window.testDownloads.length === 1, { timeout: 15000 });
+      const [got] = await page.evaluate(() => Promise.all(window.testDownloads));
+      const logged = await page.evaluate(() => [...document.querySelectorAll("#log li > b")].filter((b) => b.textContent.trim() === "embed").length);
+      assert(got.name === `${take.name}-subtitled.webm` && got.size === r.made.size && got.type === "audio/webm", `downloaded ${got.name}, ${got.size} bytes, ${got.type}`);
+      assert(logged === 1, `${logged} embed events logged`);
+    } finally {
+      await page.evaluate(() => (HTMLAnchorElement.prototype.click = window.testClick));
+    }
+    return `${r.before.container} → ${take.name.split("-")[0]}-…-subtitled.webm · ${r.before.tracks.map((t) => `${t.codec} ${t.packets} packets`).join(", ")} copied · tracks ${read.codecs.join(", ")} · cues at ${read.cues.map((c) => `${c.start}-${c.end}`).join(", ")} s · ${r.made.size - r.originalSize} bytes more`;
+  });
+
+  if (!isFirefox) {
+    // Picture and sound from the camera and microphone, in the two other containers the bench writes.
+    for (const [label, params, container] of [
+      ["Matroska (WebCodecs recorder)", { recorder: "webcodecs", wcContainer: "mkv" }, "mkv"],
+      ["MP4 (MediaRecorder, H.264 and AAC)", { mimeType: MP4 }, "mp4"],
+    ]) {
+      await test(`subtitles in the file: ${label} (Chromium)`, async () => {
+        await setParams({ captions: true, ccModel: CAPTION_MODEL, ...params });
+        try {
+          // 8 s holds one whole sentence of the fake microphone's, whenever it starts.
+          const t = await recordTake("camera", 8000);
+          const r = await embedded(t.id);
+          checkEmbedded(r);
+          assert(r.made.container === container && r.before.tracks.length === 2, `${r.before.container} with ${r.before.tracks.length} tracks was written as ${r.made.container}`);
+          const detail = `${r.before.tracks.map((t) => `${t.codec} ${t.packets} packets`).join(", ")} copied · ${r.cues.length} cues`;
+          if (container === "mp4") return `${detail} · a wvtt track with their text (read by its bytes: nothing here parses an MP4 subtitle track)`;
+          const read = checkCues(r);
+          return `${detail} · tracks ${read.codecs.join(", ")} · cues at ${read.cues.map((c) => `${c.start}-${c.end}`).join(", ")} s`;
+        } finally {
+          await closeSource();
+          await setParams({ captions: false, recorder: "mediarecorder", wcContainer: "webm", mimeType: "" });
+        }
+      });
+    }
+  }
 
   if (webcodecs) {
     await test("transcript: with the WebCodecs recorder's sound from the tap, the estimated offset agrees with the measured one", async () => {

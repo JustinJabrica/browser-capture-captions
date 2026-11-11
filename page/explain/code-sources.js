@@ -79,6 +79,8 @@ export const CODE = {
   "m-cc-rtf": ["src/captions/timeline.js"],
   "m-cc-offset": ["src/captions/timeline.js", "src/take-report.js"],
   "m-cc-clipped": ["src/captions/timeline.js", "src/speech/audio.js", "src/captions/tap-feed.js"],
+  "download-subtitled": ["src/captions/embed.js", "src/captions/subtitles.js", "page/app.js"],
+  "event-embed": ["page/app.js", "src/captions/embed.js"],
   "download-vtt": ["src/captions/subtitles.js"],
   "download-srt": ["src/captions/subtitles.js"],
   "download-txt": ["src/captions/subtitles.js"],

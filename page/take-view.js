@@ -272,6 +272,7 @@ export function cardHTML(t, { deletable = false } = {}) {
           ${solo("video", "The recording's picture on its own, its packets copied as they are")}
           ${fileButton("tap", "tap.wav", "The lossless tap, at the context's rate, every channel")}
           ${fileButton("pcm16k", "16k.wav", "The recording's audio as 16 kHz mono, ready for transcription")}
+          ${has.file ? textButton("subtitled", "with subtitles", "The recording with its subtitles written into it as a track, its packets copied as they are") : ""}
           ${textButton("vtt", ".vtt", "Subtitles as WebVTT, timed on the recording")}
           ${textButton("srt", ".srt", "Subtitles as SubRip")}
           ${textButton("txt", ".txt", "The transcript as text, an utterance a line, with its times")}

@@ -1542,6 +1542,28 @@ if (!hasModel) {
         await resetCaptions({ ccModel: CAPTION_MODEL, ccLanguage: "en" });
       }
     });
+    await test("other languages: the second pass keeps the live captions' language, or finds it from the recording", async () => {
+      const text = (transcript) => transcript.segments.map((s) => s.transcript).join(" ");
+      try {
+        // With live captions: their language carries over.
+        const t = await fileTake("test/fixtures/librivox-fr.wav", { ccModel: "auto", ccLanguage: "auto", ccFinalAuto: true });
+        await page.waitForFunction((id) => window.captureBench.latest?.id === id && window.captureBench.latest.transcripts?.final, { timeout: 120000 }, t.id);
+        const carried = (await cardNow()).transcripts.final;
+        assert(carried.language?.code === "fr" && carried.language.from === "live", `the pass after live captions: ${JSON.stringify(carried.language)}`);
+        assert(/domaine public/i.test(text(carried)), `"${text(carried)}"`);
+        assert(carried.settings.model === "whisper-base", `the pass used ${carried.settings.model}`);
+        await resetCaptions({ ccFinalAuto: false, ccModel: "auto", ccLanguage: "auto" });
+        // Without them: found from the recording itself.
+        await fileTake("test/fixtures/librivox-fr.wav", { captions: false, ccModel: "auto", ccLanguage: "auto" });
+        await secondPass();
+        const found = (await cardNow()).transcripts.final;
+        assert(found.language?.code === "fr" && found.language.from === "detected" && found.language.probability >= 0.5, `the pass with no live captions: ${JSON.stringify(found.language)}`);
+        assert(/domaine public/i.test(text(found)), `"${text(found)}"`);
+        return `carried over: "${text(carried)}" · detected (${found.language.probability}): "${text(found)}"`;
+      } finally {
+        await resetCaptions({ ccFinalAuto: false, ccModel: CAPTION_MODEL, ccLanguage: "en" });
+      }
+    });
   }
 }
 

@@ -2,6 +2,7 @@
 // so it takes the Transformers.js module as an argument instead of importing it.
 
 import { useModelSource } from "./model-env.js";
+import { isUnspaced } from "../captions/languages.js";
 
 const SAMPLE_RATE = 16000;
 
@@ -67,12 +68,16 @@ export async function createWhisperEngine(transformers, options) {
   // Word times decode in timestamp mode (no <|notimestamps|>): Whisper then
   // starts with a <|0.00|> token, which takes time zero, so the first word
   // gets its real start rather than 0.
+  // An English-only model (.en) has no language token: it is refused any
+  // other language rather than quietly transcribing it as English.
   function initTokens(language, { timestamps = false } = {}) {
     const tokens = [gen.decoder_start_token_id];
     if (multilingual) {
       const lang = gen.lang_to_id[`<|${language}|>`];
       if (lang === undefined) throw new LanguageError(language);
       tokens.push(lang, gen.task_to_id.transcribe);
+    } else if (language !== "en") {
+      throw new LanguageError(language);
     }
     if (!timestamps) tokens.push(gen.no_timestamps_token_id);
     return tokens;
@@ -132,9 +137,33 @@ export async function createWhisperEngine(transformers, options) {
     const result = { text, confidence, tokens: generated.length, ms: Date.now() - t0 };
     if (timed) {
       const times = Array.from(output.token_timestamps.data).slice(decoderInputIds.length);
-      result.words = endAtSpeech(wordsFromTokens(generated.map(Number), times), audio);
+      result.words = endAtSpeech(wordsFromTokens(generated.map(Number), times, language), audio);
     }
     return result;
+  }
+
+  // The language spoken in audio: Whisper's own detection, one decoding step
+  // from <|startoftranscript|> alone, whose next token is a language token.
+  // The step's scores are caught by a logits processor and the best language
+  // token taken (pickLanguage), rather than left to generate(): its timestamp
+  // and suppression rules count the first generated token as the one after
+  // the language. An English-only model answers "en" without running.
+  class FirstStep extends LogitsProcessor {
+    logits = null;
+    _call(inputIds, logits) {
+      this.logits ??= Float32Array.from(logits.data);
+      return logits;
+    }
+  }
+  async function detectLanguage(audio, { allowed } = {}) {
+    if (!multilingual) return { language: "en", probability: 1, ms: 0 };
+    const t0 = Date.now();
+    const { input_features } = await processor(audio);
+    const step = new FirstStep();
+    const logitsProcessor = new LogitsProcessorList();
+    logitsProcessor.push(step);
+    await whisper.generate({ inputs: input_features, decoder_input_ids: [gen.decoder_start_token_id], logits_processor: logitsProcessor, max_new_tokens: 1 });
+    return { ...pickLanguage(step.logits, gen.lang_to_id, allowed), ms: Date.now() - t0 };
   }
 
   // The last word's end comes from the token after it (the full stop, or the
@@ -162,17 +191,19 @@ export async function createWhisperEngine(transformers, options) {
 
   // Groups generated tokens into words, as Whisper's own word timestamps do: a
   // token starting with a space starts a word, punctuation joins the word
-  // before. A token's time is when it starts; a word ends when the next
-  // token (or end of text) starts.
+  // before. In a language written without spaces (Chinese, Japanese, Thai)
+  // every token is a word of its own, as Whisper splits them. A token's time
+  // is when it starts; a word ends when the next token (or end of text) starts.
   const special = new Set(tokenizer.all_special_ids?.map(Number) ?? []);
-  function wordsFromTokens(ids, times) {
+  function wordsFromTokens(ids, times, language) {
+    const unspaced = isUnspaced(language);
     const words = [];
     for (let i = 0; i < ids.length; i++) {
       if (special.has(ids[i]) || ids[i] >= gen.no_timestamps_token_id) continue;
       const piece = tokenizer.decode([ids[i]], { skip_special_tokens: true });
       if (!piece) continue;
       const end = times[i + 1] ?? times[i];
-      const startsWord = /^\s/.test(piece) || !words.length;
+      const startsWord = unspaced || /^\s/.test(piece) || !words.length;
       const joinsBefore = /^[^\s\p{L}\p{N}]+$/u.test(piece.trim()) && words.length;
       if (startsWord && !joinsBefore) words.push({ word: piece.trim(), start: times[i], end });
       else Object.assign(words.at(-1), { word: words.at(-1).word + piece.trim(), end });
@@ -183,9 +214,28 @@ export async function createWhisperEngine(transformers, options) {
 
   return {
     transcribe,
+    detectLanguage,
     dispose: () => whisper.dispose(),
     info: { model, dtype, device, multilingual, words: canTimeWords, loadMs: Date.now() - started },
   };
+}
+
+// The most likely language from one decoding step's logits: a softmax over
+// the language tokens alone, as Whisper's detect_language does, optionally
+// limited to allowed codes. langToId is generation_config.lang_to_id
+// ({ "<|en|>": 50259, ... }). Returns { language, probability, top }: top is
+// the three likeliest, [code, probability].
+export function pickLanguage(logits, langToId, allowed) {
+  const keep = allowed ? new Set(allowed) : null;
+  const candidates = Object.entries(langToId)
+    .map(([token, id]) => [token.slice(2, -2), logits[id]])
+    .filter(([code, logit]) => Number.isFinite(logit) && (!keep || keep.has(code)));
+  if (!candidates.length) throw new Error("No language to choose from");
+  const max = Math.max(...candidates.map(([, logit]) => logit));
+  const sum = candidates.reduce((total, [, logit]) => total + Math.exp(logit - max), 0);
+  const ranked = candidates.map(([code, logit]) => [code, Math.exp(logit - max) / sum]).sort((a, b) => b[1] - a[1]);
+  const round = (p) => Math.round(p * 1000) / 1000;
+  return { language: ranked[0][0], probability: round(ranked[0][1]), top: ranked.slice(0, 3).map(([code, p]) => [code, round(p)]) };
 }
 
 // Thrown by either engine (ctc-engine.js imports it) for a language the model

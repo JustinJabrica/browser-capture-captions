@@ -90,6 +90,7 @@ export const CAPTIONS_SOURCES = {
   "group-captions": [WHISPER, TRANSFORMERS_JS, ORT_WEB],
   captions: [TRANSFORMERS_JS, ORT_WEB],
   ccModel: [WHISPER, WHISPER_CODE, HUB, ONNX_COMMUNITY, TRANSFORMERS_ENV],
+  ccLanguage: [WHISPER, { title: "whisper/decoding.py: detect_language()", by: "OpenAI", where: "GitHub", url: "https://github.com/openai/whisper/blob/main/whisper/decoding.py" }],
   ccDevice: [TRANSFORMERS_WEBGPU, ORT_WEB, ORT_FLAGS, WEBGPU, WEBGPU_MDN],
   ccVad: [VAD, WHISPERX, WEBRTC_VAD, LIBFVAD, SILERO],
   ccVadLevel: [PY_WEBRTCVAD, LIBFVAD],

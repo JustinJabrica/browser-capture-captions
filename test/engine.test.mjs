@@ -45,6 +45,24 @@ for (const [file, expect] of [
   check(normalize(result.text).includes(expect), file, `"${result.text}" confidence=${result.confidence.toFixed(3)} ${result.ms} ms`);
 }
 
+// A multilingual model also finds the language, and transcribes French as
+// French; an English-only one answers English without looking, and refuses
+// French rather than hearing it as English.
+{
+  const french = await fixture("librivox-fr.wav");
+  const detected = await engine.detectLanguage(french);
+  if (engine.info.multilingual) {
+    check(detected.language === "fr" && detected.probability >= 0.5, "librivox-fr.wav's language", JSON.stringify(detected));
+    const result = await engine.transcribe(french, { language: "fr" });
+    check(/domaine public/i.test(result.text), "librivox-fr.wav in French", `"${result.text}"`);
+  } else {
+    check(detected.language === "en" && detected.ms === 0, "an English-only model's language", JSON.stringify(detected));
+    let refused = null;
+    await engine.transcribe(french, { language: "fr" }).catch((err) => (refused = err.name));
+    check(refused === "LanguageError", "an English-only model refuses French", String(refused));
+  }
+}
+
 // The live chain, as the bench runs it: the fixture as 48 kHz stereo blocks of
 // 100 ms starting at an arbitrary context frame, with one block lost on the
 // way. Every utterance must come out at the frames it was fed at.

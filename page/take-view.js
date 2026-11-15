@@ -4,6 +4,7 @@
 // what was asked for against what the browser gave, and the whole report.
 // Shared by the bench (the latest take) and the Takes view (the one opened).
 
+import { languageName, tagFor } from "../src/captions/languages.js";
 import { asVtt, cueAt, toCues } from "../src/captions/subtitles.js";
 import { bytes, clock, esc, icon } from "./bench.js";
 
@@ -125,6 +126,12 @@ export function metricGroups(t) {
       ],
     ]);
   }
+  // What a transcript was transcribed in, and how that was decided. A record from before languages has none: it was English.
+  const language = (l) => {
+    if (!l?.code) return "English";
+    const how = { setting: "as set", detected: `detected${l.probability != null ? `, ${pct(l.probability)} sure` : ""}`, "english-only": "the model only knows English", live: "the live captions'" }[l.from] ?? l.from;
+    return `${esc(languageName(l.code))} (${esc(l.code)}) · ${how}`;
+  };
   // The captions said while the take recorded, as its report keeps them (without their text).
   const live = t.transcripts?.live;
   if (live) {
@@ -136,6 +143,7 @@ export function metricGroups(t) {
       "Captions",
       [
         ["Speech model", `${esc(e.label ?? e.model ?? "?")} · ${e.device === "webgpu" ? "WebGPU" : `WebAssembly, ${num(e.threads)} thread${e.threads === 1 ? "" : "s"}`} · ${e.from === "same-origin" ? "this server" : "Hugging Face hub"}`, e.fallback ? "bad" : "", "m-cc-model"],
+        ["Language", language(live.language), "", "ccLanguage"],
         ["Captions · words · interim texts", `${num(s.segments)} · ${num(s.words)} · ${num(s.interims)}${live.incomplete ? " (the last are missing: the model was still working)" : ""}`, live.incomplete ? "bad" : "", "m-cc-segments"],
         ["Caption delay (median · 95th · max)", late ? `${sec(late.median)} · ${sec(late.p95)} · ${sec(late.max)}` : "—", "", "m-cc-latency"],
         ["Model time against speech", s.rtf == null ? "—" : `${s.rtf.toFixed(2)}× (${sec(s.speechS, 1)} of speech)`, s.rtf == null ? "" : s.rtf < 1 ? "good" : "bad", "m-cc-rtf"],
@@ -155,6 +163,7 @@ export function metricGroups(t) {
       "Second pass",
       [
         ["Speech model", `${esc(e.label ?? e.model ?? "?")} · ${e.device === "webgpu" ? "WebGPU" : `WebAssembly, ${num(e.threads)} thread${e.threads === 1 ? "" : "s"}`} · ${e.from === "same-origin" ? "this server" : "Hugging Face hub"}`, e.fallback ? "bad" : "", "m-cc-model"],
+        ["Language", language(final.language), "", "ccLanguage"],
         ["Captions · words", `${num(s.segments)} · ${num(s.words)}${s.dropped ? ` (${num(s.dropped)} stretch${s.dropped === 1 ? "" : "es"} of sound dropped as not speech)` : ""}`, "", "m-fp-segments"],
         ["Took · model time against speech", `${sec(s.tookS, 1)} · ${s.rtf == null ? "—" : `${s.rtf.toFixed(2)}×`}`, "", "m-fp-time"],
         ["Live captions against this pass", w ? (w.words ? `${num(w.errors)} of ${num(w.words)} words differ (${pct(w.rate)})` : "this pass has no words") : "no live captions to compare", "", "m-fp-wer"],
@@ -395,9 +404,9 @@ export function fillCard(card, t, media = {}, { transcript = null, cueOptions = 
       .map((s, i) => `<li data-index="${i}"${s.clipped ? ' class="clipped" title="Cut at the take\'s edge"' : ""}><time>${clock(s.start)}–${clock(s.end)}</time><span>${esc(s.transcript)}</span></li>`)
       .join("");
     if (video && source) {
-      const cues = toCues(transcript.segments, { ...cueOptions, duration: t.analysis?.file?.probe?.duration ?? Infinity });
+      const cues = toCues(transcript.segments, { ...cueOptions, language: transcript.language?.code, duration: t.analysis?.file?.probe?.duration ?? Infinity });
       urls.push(URL.createObjectURL(new Blob([asVtt(cues)], { type: "text/vtt" })));
-      const track = Object.assign(document.createElement("track"), { kind: "captions", label: transcript.kind === "final" ? "Captions (second pass)" : "Captions (live)", srclang: "en", src: urls[1], default: true });
+      const track = Object.assign(document.createElement("track"), { kind: "captions", label: transcript.kind === "final" ? "Captions (second pass)" : "Captions (live)", srclang: tagFor(transcript.language?.code ?? "en"), src: urls[1], default: true });
       video.append(track);
       // Some browsers leave a track added by script hidden until told.
       track.addEventListener("load", () => (track.track.mode = "showing"));

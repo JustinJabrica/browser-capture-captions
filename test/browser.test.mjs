@@ -1483,6 +1483,66 @@ if (!hasModel) {
       }
     });
   }
+  // Another language: a LibriVox recording's opening in French, with the language left to detection.
+  const FRENCH = "Section 1 des Anciens Canadiens. Ceci est un enregistrement LibriVox. Tous les enregistrements LibriVox font partie du domaine public.";
+  const hasMultilingual = await page.evaluate(async () => (await (await import("./page/captions.js")).localModels()).includes("onnx-community/whisper-base"));
+  if (!hasMultilingual) {
+    console.log("SKIP  other languages: French (npm run download-model whisper-base)");
+  } else {
+    await test("other languages: a French recording's language is detected, it's captioned in French, and its subtitles say so", async () => {
+      try {
+        const t = await fileTake("test/fixtures/librivox-fr.wav", { ccModel: "auto", ccLanguage: "auto" });
+        const r = await page.evaluate(
+          async (id, reference) => {
+            const [{ takeTranscripts }, { wordErrors }] = await Promise.all([import("./page/takes.js"), import("./src/captions/wer.js")]);
+            const { live } = await takeTranscripts(id);
+            const text = live.segments.map((s) => s.transcript).join(" ");
+            return { language: live.language, engine: live.engine, settings: live.settings, text, wer: wordErrors(reference, text, "fr"), srclang: document.querySelector("#latest track")?.srclang ?? null };
+          },
+          t.id,
+          FRENCH,
+        );
+        assert(r.language?.code === "fr" && r.language.from === "detected", `language ${JSON.stringify(r.language)}`);
+        assert(r.language.probability >= 0.5, `detected with ${r.language.probability}`);
+        assert(r.engine.multilingual === true && /whisper-base$/.test(r.engine.model), `transcribed by ${r.engine.model} (multilingual: ${r.engine.multilingual})`);
+        assert(r.settings.lang === "auto", `settings.lang ${r.settings.lang}`);
+        // Whisper base's French is far from perfect, LibriVox's name above all: a loose bound, against the words actually said.
+        assert(r.wer.rate != null && r.wer.rate <= 0.6, `${r.wer.errors} of ${r.wer.words} words differ: "${r.text}"`);
+        assert(/domaine public/i.test(r.text), `"${r.text}"`);
+        if (r.srclang != null) assert(r.srclang === "fr", `the card's track says srclang="${r.srclang}"`);
+        // The card's copy with its subtitles inside: the track is marked French (ISO 639-2/T "fra").
+        await page.evaluate(() => {
+          window.testDownloads = [];
+          window.testClick = HTMLAnchorElement.prototype.click;
+          HTMLAnchorElement.prototype.click = function () {
+            window.testDownloads.push(
+              fetch(this.href)
+                .then((x) => x.arrayBuffer())
+                .then((buffer) => {
+                  const bytes = new Uint8Array(buffer);
+                  let binary = "";
+                  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+                  return { name: this.download, base64: btoa(binary) };
+                }),
+            );
+          };
+        });
+        let got;
+        try {
+          await page.click('#latest [data-download="subtitled"]');
+          await page.waitForFunction(() => window.testDownloads.length === 1, { timeout: 15000 });
+          [got] = await page.evaluate(() => Promise.all(window.testDownloads));
+        } finally {
+          await page.evaluate(() => (HTMLAnchorElement.prototype.click = window.testClick));
+        }
+        const read = matroskaSubtitles(Buffer.from(got.base64, "base64"));
+        assert(read.language === "fra", `the copy's subtitle track says ${read.language}`);
+        return `detected ${r.language.code} (${r.language.probability}) · ${r.engine.model} · ${r.wer.errors} of ${r.wer.words} words differ: "${r.text}" · track ${read.language}${r.srclang ? ` · card srclang ${r.srclang}` : ""}`;
+      } finally {
+        await resetCaptions({ ccModel: CAPTION_MODEL, ccLanguage: "en" });
+      }
+    });
+  }
 }
 
 await test("Browser view: the capability report", async () => {

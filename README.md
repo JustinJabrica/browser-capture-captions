@@ -19,7 +19,9 @@ what was said while it recorded, timed on the recording. A finished take can
 be transcribed again, without a clock to keep up with. The subtitles can be
 downloaded as files, written into a copy of the recording as a track, or
 drawn into its picture: see [Live captions](#live-captions) and
-[Transcripts and subtitles](#transcripts-and-subtitles). It's published on
+[Transcripts and subtitles](#transcripts-and-subtitles). It captions 99
+languages besides English, and can find which one is spoken: see
+[Other languages](#other-languages). It's published on
 GitHub Pages too, at <https://justinjabrica.github.io/browser-capture-captions/>, where it needs
 nothing installed: see [On GitHub Pages](#on-github-pages). Most of this page
 still describes the capture bench as it came over.
@@ -221,9 +223,10 @@ clock the take's start, pauses and end are counted on. That is what the next
 stage needs to put captions on the saved file's timeline.
 
 **Models.** The Captions tab lists the transcription models: Whisper tiny.en
-(41 MB loaded), base.en (77 MB), small.en and Distil-Whisper small.en,
-large-v3-turbo on WebGPU, and two CTC models. All but large-v3-turbo hear
-English only.
+(41 MB loaded), base.en (77 MB), small.en and Distil-Whisper small.en; the
+multilingual Whisper tiny, base and small (the same sizes); large-v3-turbo
+on WebGPU; and two CTC models. The `.en` models, Distil-Whisper and the CTC
+models hear English only.
 
 - A model in `models/` loads from this server: `npm run download-model
   <id>` puts it there, and `npm run download-model -- --list` shows what is
@@ -235,10 +238,11 @@ English only.
   than probing for files, so a model that isn't there costs no failed
   requests.
 - `model` is `automatic` at first: base.en when it's on the server, else
-  tiny.en, the smallest download.
+  tiny.en, the smallest download. For any other language, detection
+  included, it picks the multilingual base or tiny the same way.
 
 **Settings** (the Captions tab; each has its explanation on the bench):
-`captions`, `model`, `device` (WebAssembly or WebGPU), the speech detector
+`captions`, `model`, `language`, `device` (WebAssembly or WebGPU), the speech detector
 (the bench's energy rule, WebRTC VAD or Silero VAD) and its level or
 threshold, the pause that ends an utterance (800 ms), the longest utterance
 (20 s), interim text and how often it's refreshed, and word times. They are
@@ -252,6 +256,57 @@ source opened, with its times.
 **The Captions chip** in the header shows the model's state: loading with its
 progress, then the model and its thread count. One thread means the page
 isn't cross-origin isolated, which costs about half the speed.
+
+### Other languages
+
+`language` in the Captions tab is English at first. It can be any of the 99
+languages the multilingual Whisper models know (large-v3-turbo also knows
+Cantonese), this browser's own language, or **detect it from the speech**.
+
+- **Detection** is Whisper's own. From `<|startoftranscript|>` alone, the
+  model's first output step scores every language token
+  (`detectLanguage()` in `src/speech/whisper-engine.js`). The softmax is
+  taken over those tokens only, as OpenAI's `detect_language()` does.
+  Transformers.js has no detection of its own: given no language, it
+  assumes English.
+- **It runs once,** on the first utterance as a whole, when it ends. The run
+  keeps the language when the model is at least 50% sure of it; if not, it
+  asks again on the next utterance, and after three tries keeps the likeliest.
+  Until then there is no interim text. An utterance's first second or two
+  isn't enough: `librivox-fr.wav` opens with "Section 1 des Anciens
+  Canadiens", which both tiny and base call English (33 to 85% sure; base
+  says Chinese at four seconds) until about six seconds in. An utterance longer than 5 s gets one earlier try, kept only
+  when the model is 80% sure.
+- **English-only models refuse another language.** Before, a `.en` model
+  given French dropped the language token and transcribed it as English;
+  now the run fails with `language-not-supported`. With **detect it**, an
+  English-only model means English.
+- **The second pass** uses the live captions' language, or detects it from
+  the recording's first 30 s, and checks it against its own model.
+- **Every record says which language.** A transcript has `language: { code,
+  from, probability? }`, with `from` one of `setting`, `detected`,
+  `english-only` or `live`. The card shows it, the card's player marks its
+  track (`srclang`), and a copy with subtitles inside gets the track's ISO
+  639-2/T code (`fra`, which Mediabunny requires: the terminological form,
+  not `fre`), from `src/captions/languages.js`.
+- **Text in other scripts.**
+  - Subtitles, word counts and the live-against-second-pass word error rate
+    find the words of Chinese, Japanese, Thai and the like with
+    `Intl.Segmenter`, and join them without spaces.
+  - Sentence ends include `。！？؟`.
+  - Word times split those languages' tokens one by one, as Whisper does.
+  - The clean-up keeps combining marks (Devanagari's and Arabic's vowel
+    signs), spots loops in Chinese by its characters, and drops the subtitle
+    credits Whisper writes over silence ("Sous-titres réalisés par la
+    communauté d'Amara.org").
+  - Burned-in captions in Arabic or Hebrew are drawn right to left.
+
+**Measured** on `librivox-fr.wav` (10.6 s, the opening of a public-domain
+LibriVox recording): whisper-base found French at 0.98 in Firefox, Edge and
+Node, and its captions differed from the words said in 8 of 19
+(LibriVox's name, which it hears as "les prévoxes", accounts for most).
+whisper-tiny found French too, then looped ("de l'exécie de l'exécie..."),
+which the clean-up drops.
 
 ## Transcripts and subtitles
 
@@ -587,7 +642,15 @@ says otherwise.
 - Subtitles inside the recording are WebVTT only, and which players show
   them varies. An MP4 copy's track is checked by its bytes and by VLC's log;
   nothing here reads an MP4 subtitle track back.
-- English only, in practice.
+- Forced alignment (`word times: by forced alignment`) knows English
+  letters only: in another language, words are timed from Whisper's
+  attention (the timestamped exports) or estimated.
+- Language detection waits for the first utterance to end, so a run in
+  **detect it** shows no interim text until then. One run has one language:
+  speech that changes language part way is transcribed in the first.
+- Whisper's accuracy outside English varies a great deal by language and is
+  much weaker in the small models; the bench's only non-English test is
+  French.
 - Whisper isn't a streaming model. A final caption can't come sooner than the
   pause that ends its utterance plus the model's time over it.
 - The energy detector can take steady noise for speech.
@@ -1215,6 +1278,7 @@ src/captions/embed.js         the recording copied with its subtitles as a track
 src/captions/burn-in.js       captions drawn into the picture: with WebCodecs, or by playing it through a canvas
 src/captions/caption-draw.js  where a caption goes on a picture, and drawing it (the layout has no DOM)
 src/captions/wer.js           how many words two transcripts differ by (no DOM)
+src/captions/languages.js     language codes for tracks and players; words in languages without spaces (no DOM)
 src/speech/file-pass.js       the second pass: the speech in a whole recording, part by part (no DOM)
 src/speech/core.js            the speech engine's settings, the worker's client and job queue, transcript clean-up
 src/speech/engine-worker.js   the worker that hosts the model: loading, WebGPU with its fallback, word times
@@ -1243,7 +1307,9 @@ test/unit/                    node --test: WAV, pattern, metrics, sound, constra
 test/engine.test.mjs          the speech model in Node, on the fixtures
 test/lib/matroska.mjs         reads a WebM or Matroska file's subtitle cues from its bytes, for the tests
 test/browser.test.mjs         end-to-end, in real browsers
-test/fixtures/                fox.wav and two-sentences.wav (from automatic-speech-recognition-and-diarization)
+test/fixtures/                fox.wav and two-sentences.wav (from automatic-speech-recognition-and-diarization);
+                              librivox-fr.wav, 0.5 to 11.15 s of LibriVox's "Les anciens canadiens", section 1
+                              (public domain: archive.org/details/les_anciens_canadiens_2203_librivox), 16 kHz mono
 ```
 
 There are three runtime dependencies, and a fourth for the published site:
@@ -1277,10 +1343,12 @@ npm run test:unit
 # The speech model itself, in Node: needs a model in models/
 npm run download-model whisper-tiny.en
 npm run test:engine
+MODEL=whisper-base npm run test:engine   # a multilingual model: French detected and transcribed too
 
 # End to end in a real browser: start the server, then in another terminal.
 # The caption tests need whisper-tiny.en in models/, and are skipped without it;
-# the word-times test needs whisper-tiny.en-timestamped as well. To test the
+# the word-times test needs whisper-tiny.en-timestamped as well, and the French test
+# whisper-base (multilingual). To test the
 # site built for GitHub Pages instead: npm run build:site, then SITE=1 npm start.
 npm start
 npm test               # Firefox
@@ -1353,7 +1421,11 @@ environment variables change that and other settings:
   5. Done: the bench published on GitHub Pages, at
      <https://justinjabrica.github.io/browser-capture-captions/>, cross-origin isolated by a
      service worker.
-  6. Later: speaker labels, other languages, streaming models.
+  6. In stages:
+     1. Done: other languages, chosen or detected.
+     2. Speaker labels: from the microphones' channels, then from voices.
+     3. Streaming: honest latency measures, words committed as they're
+        agreed (with Moonshine), then Voxtral Realtime.
 - **The WebCodecs recorder, further** (it exists now: see
   [Two recorders](#two-recorders-mediarecorder-and-webcodecs)):
   - Try it on Safari 26, the first Safari with `AudioEncoder`.

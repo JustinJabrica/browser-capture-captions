@@ -3,7 +3,7 @@
 // detectors for whole files.
 //
 // In:  { type: "load", config }
-//      { type: "transcribe" | "speech", id, audio, options }
+//      { type: "transcribe" | "speech" | "detect", id, audio, options }
 //      { type: "file-open", fileId, audio } | { type: "file-close", fileId }
 //      (audio is a Float32Array, or { fileId, start, end } in samples)
 // Out: { type: "progress", model: "asr" | "aligner", ... } | { type: "ready", info } | { type: "load-error", message }
@@ -54,12 +54,15 @@ self.onmessage = async ({ data }) => {
 
     case "transcribe":
     case "speech":
+    case "detect":
       try {
         const audio = audioOf(data.audio);
         const result =
           data.type === "transcribe"
             ? await exclusive(async () => (await enginePromise).transcribe(audio, data.options))
-            : await exclusive(() => detectSpeech(audio, data.options));
+            : data.type === "detect"
+              ? await exclusive(async () => detectLanguage(await enginePromise, audio, data.options))
+              : await exclusive(() => detectSpeech(audio, data.options));
         self.postMessage({ type: "result", id: data.id, ...result });
       } catch (err) {
         self.postMessage({
@@ -78,6 +81,13 @@ function audioOf(audio) {
   const file = files.get(audio.fileId);
   if (!file) throw new Error("That file is no longer open");
   return file.subarray(audio.start, audio.end);
+}
+
+// The language spoken: { language, probability, top?, ms }. Only Whisper's
+// multilingual models detect one; the others (English-only Whisper, the CTC
+// models) answer English.
+function detectLanguage(engine, audio, options) {
+  return engine.detectLanguage ? engine.detectLanguage(audio, options) : { language: "en", probability: 1, ms: 0 };
 }
 
 // A model's files, as the loaders take them.
@@ -175,7 +185,8 @@ async function withWords(engine, config, transformers, options) {
   engine.transcribe = async (audio, jobOptions = {}) => {
     const wanted = Boolean(source && jobOptions.words);
     const result = await transcribe(audio, { ...jobOptions, words: wanted && !aligner });
-    if (wanted && aligner && result.text) result.words = await aligner.align(audio, result.text);
+    // The aligner's wav2vec2 knows English letters only: another language's words go untimed, and are estimated.
+    if (wanted && aligner && result.text && (jobOptions.language ?? "en") === "en") result.words = await aligner.align(audio, result.text);
     if (!wanted) delete result.words;
     return result;
   };

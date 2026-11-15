@@ -13,6 +13,7 @@ import { extractTrack } from "../src/container.js";
 import { analyseTake } from "../src/take-report.js";
 import { burnIn, burnInRealtime, canBurnIn } from "../src/captions/burn-in.js";
 import { embedSubtitles } from "../src/captions/embed.js";
+import { ISO_639_2T, languageName, trackLanguage } from "../src/captions/languages.js";
 import { asJson, asSrt, asText, asVtt, toCues } from "../src/captions/subtitles.js";
 import { PcmTap, audioGraph, warmOnGestures } from "../src/audio.js";
 import { APIS, browserName, capabilities, env } from "../src/capabilities.js";
@@ -27,7 +28,7 @@ import { openMics } from "../src/sources/mics.js";
 import { openSynthetic } from "../src/sources/synthetic.js";
 import { listDevices, openUserMedia, userMediaConstraints } from "../src/sources/user-media.js";
 import { ofKind } from "../src/speech/registry.js";
-import { createCaptions } from "./captions.js";
+import { createCaptions, wantedLanguage } from "./captions.js";
 import { createCompare } from "./compare.js";
 import { setupExplainers } from "./explain.js";
 import { cardHTML, fillCard, tracksHTML } from "./take-view.js";
@@ -258,8 +259,22 @@ const CAPTION_PARAMS = [
     label: "model",
     type: "select",
     def: "auto",
-    options: [["auto", "automatic: base.en if it's here, else tiny.en"], ...ofKind("asr").map((m) => [m.id, `${m.label} · ${m.loadMB?.wasm ?? m.loadMB?.webgpu} MB`])],
-    desc: "The speech model. Bigger models make fewer mistakes and take longer; all of these hear English only, except large-v3-turbo. One that isn't on this server is downloaded from the Hugging Face hub the first time, and the browser keeps it.",
+    options: [["auto", "automatic: base if it's here, else tiny (.en for English)"], ...ofKind("asr").map((m) => [m.id, `${m.label} · ${m.loadMB?.wasm ?? m.loadMB?.webgpu} MB`])],
+    desc: "The speech model. Bigger models make fewer mistakes and take longer. The .en models, Distil-Whisper and the CTC models hear English only; Whisper tiny, base and small hear 99 languages, and large-v3-turbo 100. One that isn't on this server is downloaded from the Hugging Face hub the first time, and the browser keeps it.",
+  },
+  {
+    key: "ccLanguage",
+    label: "language",
+    type: "select",
+    def: "en",
+    options: [
+      ["auto", "detect it from the speech"],
+      ["browser", `this browser's language (${languageName(wantedLanguage("browser").split("-")[0])})`],
+      ...Object.keys(ISO_639_2T)
+        .map((code) => [code, languageName(code)])
+        .sort((a, b) => (a[0] === "en" ? -1 : b[0] === "en" ? 1 : a[1].localeCompare(b[1], "en"))),
+    ],
+    desc: "What the speech is in. Detecting it takes the first utterance, once: there is no interim text until then. Any language but English needs a multilingual model: <code>automatic</code> picks one.",
   },
   {
     key: "ccDevice",
@@ -1064,8 +1079,8 @@ document.addEventListener("click", async (e) => {
     const transcript = chosenTranscript(take, transcripts);
     if (!transcript) return;
     // Subtitles are cut from the transcript now, with the Captions tab's limits as they are.
-    const cues = () => toCues(transcript.segments, { ...cueOptions(), duration: take.analysis?.file?.probe?.duration ?? Infinity });
-    if (kind === "subtitled") return downloadSubtitled(button, entry, asVtt(cues()));
+    const cues = () => toCues(transcript.segments, { ...cueOptions(), language: transcript.language?.code, duration: take.analysis?.file?.probe?.duration ?? Infinity });
+    if (kind === "subtitled") return downloadSubtitled(button, entry, asVtt(cues()), transcript.language?.code);
     if (kind === "burned") return downloadBurned(button, entry, cues());
     if (kind === "vtt") return download(`${take.name}.vtt`, asVtt(cues()), "text/vtt");
     if (kind === "srt") return download(`${take.name}.srt`, asSrt(cues()), "application/x-subrip");
@@ -1155,12 +1170,12 @@ async function downloadSolo(button, entry, kind) {
 
 // The recording with its subtitles written into it as a track: a copy made
 // when asked for, from the take's original recording.
-async function downloadSubtitled(button, entry, vtt) {
+async function downloadSubtitled(button, entry, vtt, language) {
   if (!entry.media.file) return;
   button.disabled = true;
   try {
     const started = performance.now();
-    const made = await embedSubtitles(entry.media.file, vtt);
+    const made = await embedSubtitles(entry.media.file, vtt, { language: trackLanguage(language ?? "en") });
     log.add("result", "embed", `${entry.take.name}: subtitles written into a ${made.ext.toUpperCase()} copy as a track · ${made.tracks.map((t) => `${t.type} ${t.codec}`).join(" + ")} copied · ${bytes(made.blob.size)} · ${Math.round(performance.now() - started)} ms`);
     download(`${entry.take.name}-subtitled.${made.ext}`, made.blob);
   } catch (err) {

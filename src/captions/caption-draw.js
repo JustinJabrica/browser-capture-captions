@@ -4,6 +4,8 @@
 // with the text's width passed in, so it runs in Node, and the drawing takes
 // any 2D canvas context.
 
+import { isRtl } from "./languages.js";
+
 // One fixed look: white letters on a dark box, centred near the bottom, in
 // the page's own sans-serif. Sizes are shares of the picture's height, so a
 // caption takes the same part of a small picture as of a large one.
@@ -55,8 +57,8 @@ export function layoutCaption(lines, width, height, measure, style = CAPTION_STY
   };
 }
 
-// Draws a cue (toCues()'s: { lines }) over whatever the context already
-// holds. -> the layout it drew, or null for a cue with no text.
+// Draws a cue (toCues()'s: { lines, language }) over whatever the context
+// already holds. A right-to-left language (Arabic, Hebrew) is drawn so. -> the layout it drew, or null for a cue with no text.
 export function drawCaption(ctx, cue, width, height, style = CAPTION_STYLE) {
   const lines = (cue?.lines ?? []).filter(Boolean);
   if (!lines.length) return null;
@@ -69,6 +71,7 @@ export function drawCaption(ctx, cue, width, height, style = CAPTION_STYLE) {
   ctx.font = fontOf(layout.fontPx, style);
   ctx.textBaseline = "alphabetic";
   ctx.textAlign = "left";
+  ctx.direction = isRtl(cue.language) ? "rtl" : "ltr";
   ctx.fillStyle = style.background;
   // One pixel of overlap, so two lines' boxes leave no seam between them.
   for (const line of layout.lines) ctx.fillRect(Math.floor(line.box.x), Math.floor(line.box.y), Math.ceil(line.box.width), Math.ceil(line.box.height) + 1);

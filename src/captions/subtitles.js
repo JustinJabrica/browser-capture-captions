@@ -8,6 +8,11 @@
 // transcript has them, or else an estimate that shares the segment's time out
 // by each word's length.
 
+// The words of a language written without spaces (Chinese, Japanese, Thai)
+// are found with Intl.Segmenter and joined with nothing (src/captions/languages.js).
+
+import { joinerFor, wordsOf } from "./languages.js";
+
 // The usual subtitle limits: 42 characters a line, two lines, between about
 // a second and six on screen.
 export const CUE_DEFAULTS = { maxChars: 42, maxLines: 2, maxDurationS: 6, minDurationS: 0.7 };
@@ -15,9 +20,9 @@ export const CUE_DEFAULTS = { maxChars: 42, maxLines: 2, maxDurationS: 6, minDur
 const round = (s) => Math.round(s * 1000) / 1000;
 
 // A segment's words with times: its own, or estimated from the text.
-function timedWords(segment) {
+function timedWords(segment, language) {
   if (segment.words?.length) return segment.words.map((w) => ({ text: w.word, start: w.start, end: w.end }));
-  const texts = segment.transcript.split(/\s+/).filter(Boolean);
+  const texts = wordsOf(segment.transcript, language);
   // Each word takes time in proportion to its letters, plus one for the gap after it.
   const total = texts.reduce((n, t) => n + t.length + 1, 0);
   const span = Math.max(0, segment.end - segment.start);
@@ -29,44 +34,63 @@ function timedWords(segment) {
   });
 }
 
-// Lines of at most maxChars, filled in order. A word longer than a line gets a line of its own.
-function wrap(words, maxChars) {
-  const lines = [];
+// Lines of at most maxChars, filled in order, as groups of words. A word
+// longer than a line gets a line of its own. joiner: what goes between words
+// (a space, or nothing in a language written without spaces).
+function wrapGroups(words, maxChars, joiner = " ") {
+  const groups = [];
+  let length = 0;
   for (const word of words) {
-    const last = lines.at(-1);
-    if (last && last.length + 1 + word.length <= maxChars) lines[lines.length - 1] = `${last} ${word}`;
-    else lines.push(word);
+    const last = groups.at(-1);
+    if (last && length + joiner.length + word.length <= maxChars) {
+      last.push(word);
+      length += joiner.length + word.length;
+    } else {
+      groups.push([word]);
+      length = word.length;
+    }
   }
-  return lines;
+  return groups;
 }
+const wrap = (words, maxChars, joiner = " ") => wrapGroups(words, maxChars, joiner).map((g) => g.join(joiner));
+
+// The end of a sentence, in the scripts Whisper writes: . ! ? … and the
+// full-width 。！？, the Arabic ؟ and the Devanagari danda.
+const SENTENCE_END = /[.!?…。！？؟।]["')\]」』]?$/;
 
 // Cues from segments ({ start, end, transcript, speaker?, words? }, in order):
 // [{ start, end, text, lines, speaker, words: [{ text, start, end }] }]. A cue
 // holds at most maxLines lines of maxChars and lasts at most maxDurationS, and
 // ends where a sentence does once it has half a line or more. Cues never overlap and their starts
 // only increase; one shorter than minDurationS is held until the next begins,
-// if there is room. duration clips them to a file's length.
+// if there is room. duration clips them to a file's length. language: the
+// transcript's (Whisper's code), for languages written without spaces.
+// A cue's lineSizes is how many of its words each line holds, and joiner
+// what goes between them.
 export function toCues(segments, options = {}) {
   const { maxChars, maxLines, maxDurationS, minDurationS } = { ...CUE_DEFAULTS, ...options };
   const duration = options.duration ?? Infinity;
+  const language = options.language ?? "en";
+  const joiner = joinerFor(language);
   const cues = [];
   for (const segment of segments) {
     if (!segment.transcript?.trim()) continue;
     let current = [];
     const close = () => {
       if (!current.length) return;
-      const lines = wrap(current.map((w) => w.text), maxChars);
-      cues.push({ start: current[0].start, end: current.at(-1).end, text: lines.join("\n"), lines, speaker: segment.speaker ?? null, words: current });
+      const groups = wrapGroups(current.map((w) => w.text), maxChars, joiner);
+      const lines = groups.map((g) => g.join(joiner));
+      cues.push({ start: current[0].start, end: current.at(-1).end, text: lines.join("\n"), lines, lineSizes: groups.map((g) => g.length), joiner, language, speaker: segment.speaker ?? null, words: current });
       current = [];
     };
-    for (const word of timedWords(segment)) {
+    for (const word of timedWords(segment, language)) {
       const next = [...current, word];
-      const tooLong = wrap(next.map((w) => w.text), maxChars).length > maxLines || word.end - next[0].start > maxDurationS;
+      const tooLong = wrap(next.map((w) => w.text), maxChars, joiner).length > maxLines || word.end - next[0].start > maxDurationS;
       if (current.length && tooLong) close();
       current.push(word);
       // The end of a sentence is a good place to stop, unless the cue is only a word or two so far.
-      const text = current.map((w) => w.text).join(" ");
-      if (/[.!?…]["')\]]?$/.test(word.text) && text.length >= maxChars / 2) close();
+      const text = current.map((w) => w.text).join(joiner);
+      if (SENTENCE_END.test(word.text) && text.length >= maxChars / 2) close();
     }
     close();
   }
@@ -106,18 +130,16 @@ export const escapeCueText = (text) => text.replace(/&/g, "&amp;").replace(/</g,
 export function asVtt(cues, { karaoke = false } = {}) {
   const blocks = cues.map((cue, i) => {
     let text;
-    if (karaoke) {
+    if (karaoke && cue.lineSizes) {
       // The words in their lines, each after the first with its start time before it.
+      const joiner = cue.joiner ?? " ";
       let n = 0;
-      text = cue.lines
-        .map((line) =>
-          line
-            .split(" ")
-            .map((word) => {
-              const w = cue.words[n++];
-              return `${n > 1 && w ? `<${formatTime(Math.max(w.start, cue.start))}>` : ""}${escapeCueText(word)}`;
-            })
-            .join(" "),
+      text = cue.lineSizes
+        .map((size) =>
+          cue.words
+            .slice(n, (n += size))
+            .map((w, i) => `${n - size + i > 0 ? `<${formatTime(Math.max(w.start, cue.start))}>` : ""}${escapeCueText(w.text)}`)
+            .join(joiner),
         )
         .join("\n");
     } else {

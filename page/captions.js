@@ -13,7 +13,8 @@ import { MODELS_INDEX_URL } from "../src/deps.js";
 import { createTapFeed } from "../src/captions/tap-feed.js";
 import { TakeTimeline, captionStats, fileOffset, placeSegments } from "../src/captions/timeline.js";
 import { transcriptErrors } from "../src/captions/wer.js";
-import { config, configure, createEngine, engine } from "../src/speech/core.js";
+import { languageName } from "../src/captions/languages.js";
+import { config, configure, createEngine, engine, isMultilingual, modelLanguage, modelLanguages, modelLanguageSet } from "../src/speech/core.js";
 import { runFilePass } from "../src/speech/file-pass.js";
 import { modelDir, resolve, timestampedFor } from "../src/speech/registry.js";
 import { Transcriber } from "../src/speech/transcriber.js";
@@ -36,11 +37,23 @@ export async function localModels() {
   }
 }
 
+// The language the Captions tab asks for: "auto" (found from the speech),
+// or a BCP 47 tag. "browser" is the browser's own first language, read from
+// navigator.languages rather than <html lang>, which is the bench's (English).
+export function wantedLanguage(choice = "en") {
+  if (choice === "browser") return globalThis.navigator?.languages?.[0] ?? globalThis.navigator?.language ?? "en";
+  return choice || "en";
+}
+
+const isEnglish = (lang) => /^en\b/i.test(lang);
+
 // "auto": Whisper base.en when it's on this server, else tiny.en, the
-// smallest download from the hub.
-export function pickModel(choice, local) {
+// smallest download from the hub; for any language but English (detection
+// included), the multilingual base or tiny the same way.
+export function pickModel(choice, local, lang = "en") {
   if (choice !== "auto") return choice;
-  return local.includes(modelDir(resolve("whisper-base.en"))) ? "whisper-base.en" : "whisper-tiny.en";
+  const [base, tiny] = isEnglish(lang) ? ["whisper-base.en", "whisper-tiny.en"] : ["whisper-base", "whisper-tiny"];
+  return local.includes(modelDir(resolve(base))) ? base : tiny;
 }
 
 // overlay: the text over the preview; list: the transcript's <ol>; chip: the
@@ -174,7 +187,8 @@ export function createCaptions({ overlay, list, chip, log }) {
     }
     list.replaceChildren();
     const local = await localModels();
-    const model = pickModel(settings.ccModel, local);
+    const lang = wantedLanguage(settings.ccLanguage);
+    const model = pickModel(settings.ccModel, local, lang);
     let vad = settings.ccVad;
     if (vad === "silero-vad" && !local.includes(modelDir(resolve("silero-vad")))) {
       log.add("error", "captions", "Silero VAD isn't on this server (npm run download-model silero-vad): using the energy detector");
@@ -191,18 +205,18 @@ export function createCaptions({ overlay, list, chip, log }) {
     if (engine.state === "unloaded") configure({ model, device: settings.ccDevice, words });
 
     const transcriber = new Transcriber({
-      lang: "en-US",
+      lang,
       interimResults: settings.ccInterim,
       interimIntervalMs: settings.ccInterimIntervalMs ?? 500,
       silenceMs: settings.ccSilenceMs ?? 800,
       maxSegmentMs: settings.ccMaxSegmentMs ?? 20000,
     });
-    const mine = { transcriber, feed: createTapFeed(tap), model, settings: { ...settings, ccVad: vad, ccModel: model }, finals: [], interimStarts: [] };
+    const mine = { transcriber, feed: createTapFeed(tap), model, lang, language: null, settings: { ...settings, ccVad: vad, ccModel: model }, finals: [], interimStarts: [] };
     run = last = mine;
     transcriber.onsegment = (event) => {
       if (run !== mine) return;
-      const { id, isFinal, transcript, confidence, start: from, end, speaker, words: timed, latency, ms, cut, continued } = event;
-      const segment = { id, isFinal, transcript, confidence, start: from, end, speaker, ...(timed && { words: timed }), ...(latency != null && { latency }), ...(ms != null && { ms }), ...(cut && { cut }), ...(continued && { continued }) };
+      const { id, isFinal, transcript, confidence, start: from, end, speaker, words: timed, latency, ms, cut, continued, language } = event;
+      const segment = { id, isFinal, transcript, confidence, start: from, end, speaker, ...(timed && { words: timed }), ...(latency != null && { latency }), ...(ms != null && { ms }), ...(cut && { cut }), ...(continued && { continued }), ...(language && { language }) };
       if (isFinal && transcript) {
         mine.finals.push(segment);
         log.add("result", "caption", `[${clock(from)}–${clock(end)}] ${transcript}${latency != null ? ` · ${latency.toFixed(2)} s after it ended` : ""}`);
@@ -211,6 +225,14 @@ export function createCaptions({ overlay, list, chip, log }) {
       }
       showSegment(segment);
       listSegment(segment);
+    };
+    transcriber.onlanguage = ({ code, from, probability, top }) => {
+      if (run !== mine) return;
+      mine.language = { code, from, ...(probability != null && { probability }), ...(top && { top }) };
+      overlay.lang = list.lang = code;
+      overlay.dir = list.dir = "auto";
+      const how = from === "detected" ? `detected (${Math.round(probability * 100)}% sure${top?.length > 1 ? `; then ${top.slice(1).map(([c, p]) => `${languageName(c)} ${Math.round(p * 100)}%`).join(", ")}` : ""})` : from === "english-only" ? "the model only transcribes English" : "as set";
+      log.add("result", "captions", `language: ${languageName(code)} (${code}), ${how}`);
     };
     transcriber.onerror = (event) => {
       if (run !== mine) return;
@@ -222,7 +244,7 @@ export function createCaptions({ overlay, list, chip, log }) {
     log.add(
       "call",
       "captions",
-      `${resolve(model)?.label ?? model} · ${settings.ccDevice} · ${vad} · a pause of ${settings.ccSilenceMs ?? 800} ms ends an utterance${settings.ccInterim ? ` · interim text every ${settings.ccInterimIntervalMs ?? 500} ms` : " · no interim text"}${words !== "off" ? ` · word times: ${words}` : ""}`,
+      `${resolve(model)?.label ?? model} · ${lang === "auto" ? "language detected" : languageName(modelLanguage(lang, model) ?? lang)} · ${settings.ccDevice} · ${vad} · a pause of ${settings.ccSilenceMs ?? 800} ms ends an utterance${settings.ccInterim ? ` · interim text every ${settings.ccInterimIntervalMs ?? 500} ms` : " · no interim text"}${words !== "off" ? ` · word times: ${words}` : ""}`,
     );
     showEngine();
     try {
@@ -291,11 +313,12 @@ export function createCaptions({ overlay, list, chip, log }) {
       takeId,
       kind: "live",
       createdAt: Date.now(),
-      engine: { model: i.model ?? modelDir(resolve(mine.model)), label: resolve(mine.model)?.label ?? mine.model, dtype: i.dtype ?? null, device: i.device ?? null, threads: i.threads ?? null, crossOriginIsolated: i.crossOriginIsolated ?? null, fallback: i.fallback ?? null, wordsFrom: i.wordsFrom ?? null, from: i.from ?? null },
-      settings: { lang: "en-US", model: s.ccModel, device: s.ccDevice, vad: s.ccVad, vadLevel: s.ccVadLevel, vadThreshold: s.ccVadThreshold, silenceMs: s.ccSilenceMs, maxSegmentMs: s.ccMaxSegmentMs, interimResults: s.ccInterim, interimIntervalMs: s.ccInterimIntervalMs, words: s.ccWords ?? "off" },
+      language: mine.language,
+      engine: { model: i.model ?? modelDir(resolve(mine.model)), label: resolve(mine.model)?.label ?? mine.model, multilingual: i.multilingual ?? null, dtype: i.dtype ?? null, device: i.device ?? null, threads: i.threads ?? null, crossOriginIsolated: i.crossOriginIsolated ?? null, fallback: i.fallback ?? null, wordsFrom: i.wordsFrom ?? null, from: i.from ?? null },
+      settings: { lang: mine.lang, model: s.ccModel, device: s.ccDevice, vad: s.ccVad, vadLevel: s.ccVadLevel, vadThreshold: s.ccVadThreshold, silenceMs: s.ccSilenceMs, maxSegmentMs: s.ccMaxSegmentMs, interimResults: s.ccInterim, interimIntervalMs: s.ccInterimIntervalMs, words: s.ccWords ?? "off" },
       clock: { rate: timeline.rate, firstFedFrame: feedClock.firstFrame, startFrame: timeline.startFrame, endFrame: timeline.endFrame, gaps: timeline.gaps, lostFrames: feedClock.lostFrames, ...offset },
       segments,
-      stats: { ...captionStats(segments), interims, clipped: segments.filter((x) => x.clipped).length },
+      stats: { ...captionStats(segments, { language: mine.language?.code }), interims, clipped: segments.filter((x) => x.clipped).length },
       ...(complete ? {} : { incomplete: true }),
     };
   }
@@ -316,7 +339,12 @@ export function createCaptions({ overlay, list, chip, log }) {
   async function secondPass({ take, pcm16k, settings, live = null, onProgress = () => {} }) {
     const started = performance.now();
     const local = await localModels();
-    const model = settings.ccFinalModel && settings.ccFinalModel !== "same" ? settings.ccFinalModel : pickModel(settings.ccModel, local);
+    // The language: the live captions' when the take has them, else the setting's (or found from the file).
+    const lang = live?.language?.code ?? wantedLanguage(settings.ccLanguage);
+    const model = settings.ccFinalModel && settings.ccFinalModel !== "same" ? settings.ccFinalModel : pickModel(settings.ccModel, local, lang);
+    if (lang !== "auto" && !modelLanguage(lang, model)) {
+      throw new Error(`The second pass's model, ${resolve(model)?.label ?? model}, can't transcribe ${languageName(lang)} (it transcribes ${modelLanguages(model)})`);
+    }
     const words = settings.ccFinalWords ?? "off";
     let vad = settings.ccVad;
     if (vad === "silero-vad" && !local.includes(modelDir(resolve("silero-vad")))) vad = "energy";
@@ -339,12 +367,23 @@ export function createCaptions({ overlay, list, chip, log }) {
     const session = `second-pass-${++second.runs}`;
     const fileId = eng.openFile(audio); // the audio moves to the worker
     let pass;
+    let language;
     try {
+      if (lang !== "auto") {
+        language = { code: modelLanguage(lang, model), from: live?.language?.code ? "live" : "setting" };
+      } else if (!isMultilingual(model)) {
+        language = { code: "en", from: "english-only" };
+      } else {
+        // Whisper's own window: the first 30 s of the recording.
+        const r = await eng.detectLanguage({ fileId, start: 0, end: Math.min(samples, 30 * 16000) }, { allowed: [...modelLanguageSet(model)] }, { session });
+        language = { code: r?.language ?? "en", from: "detected", ...(r && { probability: r.probability, top: r.top }) };
+        if (r) log.add("result", "captions", `second pass: ${languageName(r.language)} (${r.language}), detected (${Math.round(r.probability * 100)}% sure)`);
+      }
       pass = await runFilePass(
         { duration },
         {
           speech: async () => (await eng.speech({ fileId, start: 0, end: samples }, { vad, vadLevel: settings.ccVadLevel ?? 2, vadThreshold: settings.ccVadThreshold ?? 0.5 }, { session }))?.regions ?? [],
-          transcribe: (from, to) => eng.transcribe({ fileId, start: from, end: to }, { language: "en", prompt: "", words: true }, { session }),
+          transcribe: (from, to) => eng.transcribe({ fileId, start: from, end: to }, { language: language.code, prompt: "", words: true }, { session }),
           onProgress,
         },
         { mergeGap: (settings.ccSilenceMs ?? 800) / 1000 },
@@ -363,18 +402,19 @@ export function createCaptions({ overlay, list, chip, log }) {
       takeId: take.id,
       kind: "final",
       createdAt: Date.now(),
-      engine: { model: i.model ?? modelDir(resolve(model)), label: resolve(model)?.label ?? model, dtype: i.dtype ?? null, device: i.device ?? null, threads: i.threads ?? null, crossOriginIsolated: i.crossOriginIsolated ?? null, fallback: i.fallback ?? null, wordsFrom: i.wordsFrom ?? null, from: i.from ?? null },
-      settings: { lang: "en-US", model, device: settings.ccDevice, vad, vadLevel: settings.ccVadLevel, vadThreshold: settings.ccVadThreshold, mergeGapMs: settings.ccSilenceMs ?? 800, words },
+      language,
+      engine: { model: i.model ?? modelDir(resolve(model)), label: resolve(model)?.label ?? model, multilingual: i.multilingual ?? null, dtype: i.dtype ?? null, device: i.device ?? null, threads: i.threads ?? null, crossOriginIsolated: i.crossOriginIsolated ?? null, fallback: i.fallback ?? null, wordsFrom: i.wordsFrom ?? null, from: i.from ?? null },
+      settings: { lang, model, device: settings.ccDevice, vad, vadLevel: settings.ccVadLevel, vadThreshold: settings.ccVadThreshold, mergeGapMs: settings.ccSilenceMs ?? 800, words },
       clock: { offsetS, offsetFrom: "decoded" },
       segments,
       stats: {
-        ...captionStats(segments),
+        ...captionStats(segments, { language: language.code }),
         speechRegions: pass.speech.length,
         parts: pass.parts.length,
         dropped: pass.dropped,
         tookS: Math.round(performance.now() - started) / 1000,
         // How the live captions differ from this pass, word for word.
-        againstLive: live?.segments ? transcriptErrors(segments, live.segments) : null,
+        againstLive: live?.segments ? transcriptErrors(segments, live.segments, language.code) : null,
       },
     };
   }

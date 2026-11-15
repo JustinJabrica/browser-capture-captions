@@ -18,7 +18,11 @@
 //
 // A transcript (page/captions.js makes them):
 //   { format: "caption-bench-transcript/1", takeId, kind: "live" | "final", createdAt,
-//     engine: { model, dtype, device, threads, crossOriginIsolated, fallback, wordsFrom, from },
+//     language: { code, from, probability?, top? }   what it was transcribed in: code is Whisper's ("fr");
+//              from is "setting", "detected", "english-only" (a model that only knows English)
+//              or, for a final one, "live" (the live captions' language); null in a record
+//              made before languages, which was English
+//     engine: { model, multilingual, dtype, device, threads, crossOriginIsolated, fallback, wordsFrom, from },
 //     settings: the Captions tab's, as the run used them,
 //     clock: { rate, firstFedFrame, startFrame, endFrame, gaps, lostFrames,
 //              offsetS, offsetFrom, estimatedS, waveScore, driftS }   how its times were placed

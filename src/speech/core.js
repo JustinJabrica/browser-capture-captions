@@ -172,6 +172,14 @@ class EngineClient extends EventTarget {
     return this.#enqueue({ type: "transcribe", audio, options, session, replaceKey, priority });
   }
 
+  // Queues language detection over audio: { language, probability, top?, ms },
+  // with language a Whisper code ("fr"). options: { allowed } limits it to
+  // those codes. Models that can't detect answer English.
+  detectLanguage(audio, options, { session, priority } = {}) {
+    this.load().catch(() => {});
+    return this.#enqueue({ type: "detect", audio, options, session, priority });
+  }
+
   // Queues speech detection over audio (usually a whole file):
   // { regions: [[start, end]] } in seconds. options: { vad, vadLevel, vadThreshold }.
   speech(audio, options, { session } = {}) {
@@ -293,29 +301,32 @@ const LANGUAGE_ALIASES = { nb: "no", jv: "jw", fil: "tl", iw: "he", in: "id" };
 
 const ENGLISH_ONLY = new Set(["en"]);
 
-// The languages the transcription model (config.model) transcribes, from its
-// registry entry. A model the registry doesn't know (any Hugging Face repo)
-// is taken to be a Whisper export: English only when its name ends in ".en",
-// else Whisper's whole list.
-function modelLanguageSet() {
-  const { languages } = resolve(config.model, { kind: "asr" }) ?? {};
+// The languages a transcription model (the shared engine's, config.model,
+// unless another is named) transcribes, from its registry entry. A model the
+// registry doesn't know (any Hugging Face repo) is taken to be a Whisper
+// export: English only when its name ends in ".en", else Whisper's whole list.
+export function modelLanguageSet(model = config.model) {
+  const { languages } = resolve(model, { kind: "asr" }) ?? {};
   if (Array.isArray(languages)) return new Set(languages);
   if (languages === "whisper") return WHISPER_LANGUAGES;
-  return /\.en$/i.test(config.model) ? ENGLISH_ONLY : WHISPER_LANGUAGES;
+  return /\.en$/i.test(model) ? ENGLISH_ONLY : WHISPER_LANGUAGES;
 }
 
 // BCP 47 tag -> the language code the engine takes (Whisper's), or null if
 // the transcription model can't do it.
-export function modelLanguage(lang) {
+export function modelLanguage(lang, model = config.model) {
   const primary = String(lang).split(/[-_]/)[0].toLowerCase();
   const code = LANGUAGE_ALIASES[primary] ?? primary;
-  return modelLanguageSet().has(code) ? code : null;
+  return modelLanguageSet(model).has(code) ? code : null;
 }
+
+// Whether a model transcribes more than English, so it can detect a language.
+export const isMultilingual = (model = config.model) => modelLanguageSet(model).size > 1;
 
 // What the transcription model understands, for messages: "English only",
 // "Whisper's languages" or "25 languages (bg, cs, …)".
-export function modelLanguages() {
-  const set = modelLanguageSet();
+export function modelLanguages(model = config.model) {
+  const set = modelLanguageSet(model);
   if (set === WHISPER_LANGUAGES) return "Whisper's languages";
   if (set.size === 1 && set.has("en")) return "English only";
   return `${set.size} languages (${[...set].join(", ")})`;
@@ -329,15 +340,23 @@ export function resolveLang(lang) {
 const HALLUCINATIONS =
   /^(you|thank you|thanks|thanks for watching|thank you for watching|bye|okay|so)[.!?]*$/i;
 
+// Subtitle credits from the films Whisper learned from, which the
+// multilingual models write over silence and noise ("Sous-titres réalisés
+// par la communauté d'Amara.org", "Untertitel im Auftrag des ZDF"). Nobody
+// says these, so they are dropped whatever the confidence.
+const CREDITS =
+  /amara\.org|untertitel (im auftrag|der amara|von)|untertitelung (des|im auftrag)|sous-titr(es|age) (réalisés? )?(par|de)|subtítulos (realizados )?por|ondertitel(s|ing)? (door|van)|napisy (wykonane )?przez|субтитры (сделал|создавал|подогнал)|字幕(由|製作|提供)|ご視聴ありがとうございました/i;
+
 export function cleanTranscript(text, confidence, { punctuation = true } = {}) {
   let clean = text
     .replace(/\[[^\]]*\]|\([^)]*\)/g, " ") // [BLANK_AUDIO], (music), ...
     .replace(/\s+/g, " ")
     .trim();
   if (HALLUCINATIONS.test(clean) && confidence < 0.5) clean = "";
-  // Off: bare lower-case words ("blue", not "Blue.").
+  if (clean.length < 120 && CREDITS.test(clean)) clean = "";
+  // Off: bare lower-case words ("blue", not "Blue."). Marks stay with their letters.
   if (!punctuation) {
-    clean = clean.replace(/[^\p{L}\p{N}\s'’-]/gu, "").replace(/\s+/g, " ").trim().toLowerCase();
+    clean = clean.replace(/[^\p{L}\p{M}\p{N}\s'’-]/gu, "").replace(/\s+/g, " ").trim().toLowerCase();
   }
   return clean;
 }
@@ -349,8 +368,15 @@ export function cleanTranscript(text, confidence, { punctuation = true } = {}) {
 // the same three-word phrase repeated several times. (A genuine chant like
 // "no no no no no no" can trip it; rare, and acceptable where this only ever
 // drops obvious loops.)
+// In a script written without spaces (Chinese, Japanese, Thai), a "word"
+// would be the whole utterance, so its letters are judged one by one, over
+// a longer stretch.
 export function isDegenerate(text) {
-  const words = text.toLowerCase().match(/\p{L}+/gu) ?? [];
+  let words = text.toLowerCase().match(/[\p{L}\p{M}]+/gu) ?? [];
+  const letters = text.match(/\p{L}/gu) ?? [];
+  if (words.length < 6 && letters.length >= 12 && /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}\p{Script=Tibetan}]/u.test(text)) {
+    words = letters;
+  }
   if (words.length < 6) return false;
   if (new Set(words).size / words.length < 0.3) return true; // "la la la la la la"
   const trigrams = new Map();

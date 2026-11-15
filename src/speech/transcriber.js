@@ -5,7 +5,8 @@
 // capture, so the times it reports can be placed on the tap's clock.
 //
 //   const t = new Transcriber({ lang: "en-US" });
-//   t.onsegment = ({ id, isFinal, start, end, transcript }) => ...;
+//   t.onsegment = ({ id, isFinal, start, end, transcript, language }) => ...;
+//   t.onlanguage = ({ code, from, probability }) => ...;   // the run's language, once known
 //   await t.start(feed);           // feed.open({ onAudio, onEnded }) -> { stop() }
 //   await t.cut();                 // end the utterance in progress, here
 //   t.stop();
@@ -14,14 +15,14 @@
 // gaps; a segment's start and end are seconds of that audio, counted from the
 // first sample fed.
 
-import { cleanTranscript, configure, detectorOptions, engine, modelLanguage, modelLanguages, promptFromPhrases, resolveLang } from "./core.js";
+import { cleanTranscript, configure, detectorOptions, engine, isMultilingual, modelLanguage, modelLanguages, modelLanguageSet, promptFromPhrases, resolveLang } from "./core.js";
 import { SAMPLE_RATE, Segmenter } from "./audio.js";
 import { createLiveDetector } from "./vad.js";
 
 export { configure };
 
 const DEFAULTS = {
-  lang: "", // BCP 47; empty uses <html lang>, then navigator.language
+  lang: "", // BCP 47; empty uses <html lang>, then navigator.language; "auto" detects it
   interimResults: true,
   phrases: [], // strings or { phrase, boost } the recognizer should expect
   punctuation: true,
@@ -30,7 +31,20 @@ const DEFAULTS = {
   interimIntervalMs: 500,
 };
 
-const EVENTS = ["start", "segment", "vad", "error", "end"];
+const EVENTS = ["start", "segment", "language", "vad", "error", "end"];
+
+// Language detection (lang: "auto") runs on the first utterance as a whole,
+// when it ends, and the run keeps the language it finds when the model is at
+// least LANGUAGE_FLOOR sure of it; below that it asks again on the next
+// utterances, and after MAX_DETECTIONS tries keeps the likeliest so far. An
+// utterance's first seconds aren't enough: names, numbers and borrowed words
+// sound like any language ("Section 1 des Anciens Canadiens" is English to
+// Whisper until about six seconds in). A long utterance gets one earlier try,
+// at EARLY_DETECT_MS, kept only when the model is EARLY_FLOOR sure.
+const LANGUAGE_FLOOR = 0.5;
+const EARLY_DETECT_MS = 5000;
+const EARLY_FLOOR = 0.8;
+const MAX_DETECTIONS = 3;
 
 // A transcript segment. Interim segments (isFinal false) share their id with
 // the final segment that replaces them; a final segment with an empty
@@ -43,10 +57,12 @@ const EVENTS = ["start", "segment", "vad", "error", "end"];
 // cut is true on a final segment that cut() ended while the speech went on,
 // and continued on one that carries on an utterance a cut ended.
 // speaker is always null here: speaker labels are a later stage.
+// language is the code a final segment was transcribed in ("fr").
 export class SegmentEvent extends Event {
-  constructor(type, { id, isFinal, transcript, confidence, start, end, speaker, words, latency, cut, continued }) {
+  constructor(type, { id, isFinal, transcript, confidence, start, end, speaker, words, latency, cut, continued, language }) {
     super(type);
     Object.assign(this, { id, isFinal, transcript, confidence, start, end, speaker });
+    if (language) this.language = language;
     if (words) this.words = words;
     if (latency != null) this.latency = latency;
     if (cut) this.cut = true;
@@ -65,6 +81,19 @@ export class VadEvent extends Event {
   constructor(type, { time, score, speech }) {
     super(type);
     Object.assign(this, { time, score, speech });
+  }
+}
+
+// The run's language, once it is known: code is Whisper's ("fr"); from is
+// "setting" (the lang option), "english-only" (lang "auto" with a model that
+// only transcribes English) or "detected", with the model's probability and
+// its three likeliest, [code, probability].
+export class LanguageEvent extends Event {
+  constructor(type, { code, from, probability, top }) {
+    super(type);
+    Object.assign(this, { code, from });
+    if (probability != null) this.probability = probability;
+    if (top) this.top = top;
   }
 }
 
@@ -178,11 +207,21 @@ class LiveRun {
   async begin() {
     await null; // start() returns before any event fires
 
-    this.lang = resolveLang(this.options.lang);
-    this.language = modelLanguage(this.lang);
     this.prompt = promptFromPhrases(this.options.phrases);
-    if (!this.language) {
-      return this.failStart("language-not-supported", `${this.lang} is not supported (the model transcribes ${modelLanguages()})`);
+    if (this.options.lang === "auto") {
+      // Detected from the speech, unless the model only knows English.
+      this.lang = "auto";
+      this.language = null;
+      this.detections = 0;
+      this.likeliest = null;
+      if (!isMultilingual()) this.setLanguage({ code: "en", from: "english-only" });
+    } else {
+      this.lang = resolveLang(this.options.lang);
+      this.language = modelLanguage(this.lang);
+      if (!this.language) {
+        return this.failStart("language-not-supported", `${this.lang} is not supported (the model transcribes ${modelLanguages()})`);
+      }
+      this.setLanguage({ code: this.language, from: "setting" });
     }
     engine.load().catch(() => {}); // failures surface when transcribing
 
@@ -251,10 +290,46 @@ class LiveRun {
     this.active = { utterance, id: this.nextId(), start: seconds(startSample), shown: false };
   }
 
+  // The run's language, from the setting or once detected.
+  setLanguage(info) {
+    this.language = info.code;
+    this.languageInfo = info;
+    queueMicrotask(() => this.state !== "done" && this.emit(new LanguageEvent("language", info)));
+  }
+
+  // Asks the model which language audio (a copy: it goes to the worker) is
+  // in, unless the run already knows or is asking. Resolves when it has
+  // answered. The language is kept when the model is at least floor sure of
+  // it, or after MAX_DETECTIONS tries (an early try doesn't count).
+  detectLanguage(audio, { floor = LANGUAGE_FLOOR, early = false } = {}) {
+    if (this.language) return Promise.resolve();
+    this.detecting ??= engine
+      .detectLanguage(audio, { allowed: [...modelLanguageSet()] }, { session: this.key, priority: true })
+      .then((r) => {
+        if (!r || this.language) return;
+        if (!early) this.detections++;
+        if (!this.likeliest || r.probability > this.likeliest.probability) this.likeliest = r;
+        if (r.probability >= floor || this.detections >= MAX_DETECTIONS) {
+          const { language, probability, top } = this.likeliest;
+          this.setLanguage({ code: language, from: "detected", probability, top });
+        }
+      })
+      .finally(() => (this.detecting = null));
+    return this.detecting;
+  }
+
   speechProgress(utterance, ms, getAudio) {
     const active = this.active;
-    if (!this.options.interimResults || active?.utterance !== utterance) return;
-    if (this.interimBusy || engine.state !== "ready") return;
+    if (active?.utterance !== utterance || engine.state !== "ready") return;
+    // Until the language is known nothing is transcribed: the first utterance finds it.
+    if (!this.language) {
+      if (ms >= EARLY_DETECT_MS && !active.earlyDetect && !this.detecting) {
+        active.earlyDetect = true;
+        this.detectLanguage(getAudio(), { floor: EARLY_FLOOR, early: true }).catch(() => {});
+      }
+      return;
+    }
+    if (!this.options.interimResults || this.interimBusy) return;
     const now = performance.now();
     if (ms < 400 || now - this.lastInterim < this.options.interimIntervalMs) return;
     this.lastInterim = now;
@@ -304,8 +379,16 @@ class LiveRun {
   // Resolves to the final segments for one utterance.
   async transcribeUtterance(utterance, audio) {
     const end = utterance.start + seconds(audio.length); // before the buffer moves to the worker
+    // The language first, if it's still to be found: from this utterance, as a
+    // whole, when an earlier try (its first seconds, or an earlier utterance) wasn't sure.
+    if (!this.language) {
+      await this.detecting?.catch(() => {});
+      if (!this.language) await this.detectLanguage(audio.slice());
+    }
+    // Not yet sure: this utterance goes in the likeliest language so far.
+    const language = this.language ?? this.likeliest?.language ?? "en";
     // Ahead of any interim: a finished utterance's caption matters more than a guess at the next one.
-    const r = await engine.transcribe(audio, this.jobOptions({ words: true }), { session: this.key, priority: true });
+    const r = await engine.transcribe(audio, { ...this.jobOptions({ words: true }), language }, { session: this.key, priority: true });
     const transcript = r ? cleanTranscript(r.text, r.confidence, this.options) : "";
     if (!transcript) return utterance.shown ? [this.withdrawal(utterance)] : [];
     return [
@@ -321,6 +404,7 @@ class LiveRun {
         ms: r.ms,
         cut: utterance.cut,
         continued: utterance.continued,
+        language,
       },
     ];
   }

@@ -52,6 +52,16 @@ const timestampedFiles = [...whisperFiles([]), "added_tokens.json", "merges.txt"
 
 const ENGLISH = ["en"];
 
+// The 99 languages of the multilingual Whisper exports before large-v3, in
+// their generation_config.json's lang_to_id order: Whisper's list without
+// Cantonese (yue), which large-v3 added.
+const WHISPER_V2 = (
+  "en zh de es ru ko fr ja pt tr pl ca nl ar sv it id hi fi vi he uk el ms cs ro da hu ta no th " +
+  "ur hr bg lt la mi ml cy sk te fa lv bn sr az sl kn et mk br eu is hy ne mn bs kk sq sw gl mr pa " +
+  "si km sn yo so af oc ka be tg sd gu am yi lo uz fo ht ps tk nn mt sa lb my bo tl mg as tt haw ln " +
+  "ha ba jw su"
+).split(" ");
+
 export const MODELS = [
   // --- Transcription (ASR) ---------------------------------------------------
   {
@@ -69,6 +79,24 @@ export const MODELS = [
   {
     id: "whisper-small.en", kind: "asr", runtime: "transformers", label: "Whisper small.en", timestamped: "whisper-small.en-timestamped", languages: ENGLISH,
     source: { type: "hf", repo: "onnx-community/whisper-small.en", files: whisperFiles(["fp16"]) },
+    loadMB: { wasm: 249, webgpu: 333 }, sizeMB: 426, licence: "unverified", capabilities: { words: "alignment", prompts: true, punctuation: true },
+    status: "unverified",
+  },
+  {
+    id: "whisper-tiny", kind: "asr", runtime: "transformers", label: "Whisper tiny (99 languages)", timestamped: "whisper-tiny-timestamped", languages: WHISPER_V2,
+    source: { type: "hf", repo: "onnx-community/whisper-tiny", files: whisperFiles() },
+    loadMB: { wasm: 41, webgpu: 47 }, sizeMB: 90, licence: "unverified", capabilities: { words: "alignment", prompts: true, punctuation: true },
+    status: "unverified",
+  },
+  {
+    id: "whisper-base", kind: "asr", runtime: "transformers", label: "Whisper base (99 languages)", timestamped: "whisper-base-timestamped", languages: WHISPER_V2,
+    source: { type: "hf", repo: "onnx-community/whisper-base", files: whisperFiles() },
+    loadMB: { wasm: 77, webgpu: 95 }, sizeMB: 201, licence: "Apache-2.0", capabilities: { words: "alignment", prompts: true, punctuation: true },
+    status: "unverified",
+  },
+  {
+    id: "whisper-small", kind: "asr", runtime: "transformers", label: "Whisper small (99 languages)", timestamped: "whisper-small-timestamped", languages: WHISPER_V2,
+    source: { type: "hf", repo: "onnx-community/whisper-small", files: whisperFiles(["fp16"]) },
     loadMB: { wasm: 249, webgpu: 333 }, sizeMB: 426, licence: "unverified", capabilities: { words: "alignment", prompts: true, punctuation: true },
     status: "unverified",
   },
@@ -140,6 +168,21 @@ export const MODELS = [
   {
     id: "whisper-small.en-timestamped", kind: "words", runtime: "transformers", label: "Whisper small.en word timestamps",
     source: { type: "hf", repo: "onnx-community/whisper-small.en_timestamped", files: timestampedFiles },
+    loadMB: { wasm: 249 }, sizeMB: 250, licence: "unverified", status: "unverified",
+  },
+  {
+    id: "whisper-tiny-timestamped", kind: "words", runtime: "transformers", label: "Whisper tiny word timestamps",
+    source: { type: "hf", repo: "onnx-community/whisper-tiny_timestamped", files: timestampedFiles },
+    loadMB: { wasm: 41 }, sizeMB: 42, licence: "unverified", status: "unverified",
+  },
+  {
+    id: "whisper-base-timestamped", kind: "words", runtime: "transformers", label: "Whisper base word timestamps",
+    source: { type: "hf", repo: "onnx-community/whisper-base_timestamped", files: timestampedFiles },
+    loadMB: { wasm: 77 }, sizeMB: 77, licence: "unverified", status: "unverified",
+  },
+  {
+    id: "whisper-small-timestamped", kind: "words", runtime: "transformers", label: "Whisper small word timestamps",
+    source: { type: "hf", repo: "onnx-community/whisper-small_timestamped", files: timestampedFiles },
     loadMB: { wasm: 249 }, sizeMB: 250, licence: "unverified", status: "unverified",
   },
   {

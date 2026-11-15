@@ -9,6 +9,8 @@
 // (PcmTap.finish() keeps the same frames), so the only thing measured rather
 // than counted is offsetS. No DOM: it runs in Node.
 
+import { wordsOf } from "./languages.js";
+
 // A take on the context's clock: PcmTap.finish()'s { sampleRate, startFrame,
 // endFrame, gaps }, gaps being the [from, to) frames left out while paused.
 export class TakeTimeline {
@@ -124,14 +126,14 @@ export function placeSegments(segments, clock, timeline, { offsetS = 0, duration
 // What the captions cost and how late they came: { segments, words, speechS,
 // latencyS: { median, p95, max } | null, rtf } for placed segments. rtf is the
 // model's time over the speech's length: under 1 keeps up.
-export function captionStats(segments) {
+export function captionStats(segments, { language = "en" } = {}) {
   const latencies = segments.map((s) => s.latency).filter((x) => x != null).sort((a, b) => a - b);
   const at = (q) => latencies[Math.min(latencies.length - 1, Math.floor(q * latencies.length))];
   const speechS = segments.reduce((sum, s) => sum + (s.end - s.start), 0);
   const modelS = segments.reduce((sum, s) => sum + (s.ms ?? 0), 0) / 1000;
   return {
     segments: segments.length,
-    words: segments.reduce((n, s) => n + (s.words?.length ?? s.transcript.split(/\s+/).filter(Boolean).length), 0),
+    words: segments.reduce((n, s) => n + (s.words?.length ?? wordsOf(s.transcript, language).length), 0),
     speechS: round(speechS),
     latencyS: latencies.length ? { median: round(at(0.5)), p95: round(at(0.95)), max: round(latencies.at(-1)) } : null,
     rtf: speechS > 0 && segments.some((s) => s.ms != null) ? Math.round((modelS / speechS) * 100) / 100 : null,

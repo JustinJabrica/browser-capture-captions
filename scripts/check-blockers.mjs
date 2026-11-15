@@ -11,11 +11,8 @@
 // limited to other sites, modifier rules (redirects, permissions, removeparam
 // and the like) and regex rules are skipped. Exceptions (@@) are listed.
 
-import { readdirSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { COI_SERVICE_WORKER, siteFiles } from "./lib/site-files.mjs";
 
-const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const LISTS = [
   "https://easylist.to/easylist/easylist.txt",
   "https://easylist.to/easylist/easyprivacy.txt",
@@ -23,21 +20,9 @@ const LISTS = [
   "https://ublockorigin.github.io/uAssets/filters/privacy.txt",
 ];
 
-// Every file the bench and the guide can load, the libraries copied into vendor/ included.
-function files(dir) {
-  return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
-    const p = join(dir, e.name);
-    return e.isDirectory() ? files(p) : [p];
-  });
-}
-const paths = [
-  "index.html",
-  "guide.html",
-  ...files(join(root, "page")),
-  ...files(join(root, "src")),
-  ...files(join(root, "test", "fixtures")),
-  ...files(join(root, "vendor")),
-].map((p) => relative(root, resolve(root, p)).replace(/\\/g, "/"));
+// Every file the bench and the guide can load (scripts/lib/site-files.mjs), and the
+// service worker the published site adds at its root.
+const paths = [...siteFiles(), COI_SERVICE_WORKER[1]];
 const urls = paths.map((p) => `http://127.0.0.1:8100/${p}`);
 
 function toRegex(pattern) {

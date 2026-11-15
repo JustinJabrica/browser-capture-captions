@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { APIS } from "../../src/capabilities.js";
-import { CODE } from "../../page/explain/code-sources.js";
+import { CODE, REPO } from "../../page/explain/code-sources.js";
 import { allArticles, article } from "../../page/explain/lookup.js";
 import { SOURCES } from "../../page/explain/sources.js";
 import { SECTIONS, TOPICS } from "../../page/explain/topics.js";
@@ -95,5 +95,5 @@ test("the guide lists every topic once, and articles carry their sources", () =>
   assert.equal(listed.length, Object.keys(TOPICS).length);
   assert.equal(new Set(listed).size, listed.length);
   const withCode = article("tap");
-  assert.ok(withCode.sources.some((s) => s.by === "This project's code" && s.url === "src/audio.js"));
+  assert.ok(withCode.sources.some((s) => s.by === "This project's code" && s.url === `${REPO}src/audio.js`));
 });

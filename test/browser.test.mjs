@@ -137,6 +137,21 @@ function assert(condition, message) {
 const near = (x, y, tolerance) => x != null && Math.abs(x - y) <= tolerance;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// A static host such as GitHub Pages can't send cross-origin isolation
+// headers, so the site built for one (npm run build:site, served the same way
+// with SITE=1 node server.mjs) gets them from a service worker, which reloads
+// the page once on the first visit. One visit here, before any test, so every
+// page the tests open is isolated from its first load. Against the bench's
+// own server, which sends the headers, it's isolated at once.
+{
+  const warm = await browser.newPage();
+  await warm.goto(BASE);
+  const until = Date.now() + 15000;
+  // The service worker's reload destroys the page's context mid-evaluate: that counts as not yet.
+  while (Date.now() < until && !(await warm.evaluate(() => globalThis.crossOriginIsolated).catch(() => false))) await sleep(250);
+  await warm.close();
+}
+
 const page = await openPage("");
 await page.evaluate(async () => {
   localStorage.clear();
@@ -272,6 +287,12 @@ await test("captions are on at first, and off leaves the speech model unloaded",
   assert(first.on === true, "captions aren't on by default");
   await setParams({ captions: false });
   return `chip: ${first.chip}`;
+});
+
+await test("the page is cross-origin isolated, so speech models can run on several threads", async () => {
+  const s = await page.evaluate(() => ({ isolated: globalThis.crossOriginIsolated, worker: Boolean(navigator.serviceWorker?.controller) }));
+  assert(s.isolated === true, `not cross-origin isolated${s.worker ? ", with a service worker" : ""}`);
+  return s.worker ? "by the service worker (a static host's copy)" : "by the server's headers";
 });
 
 await test("the bench loads, in a secure context, with this browser's formats", async () => {

@@ -1,10 +1,11 @@
 // The bench's own features have no paper or outside documentation: their
 // source is the code that implements them. CODE[id] = paths in this repo;
-// lookup.js turns each into a link. With REPO empty the links are relative,
-// so they open the file from the bench's own server; set REPO to the
-// repository's GitHub "blob/main/" URL once it has one.
+// lookup.js turns each into a link, to the file on GitHub: some of them
+// (scripts/, server.mjs) aren't part of the site GitHub Pages publishes
+// (scripts/build-site.mjs). With REPO empty the links would be relative,
+// opening the file from the bench's own server.
 
-export const REPO = "";
+export const REPO = "https://github.com/JustinJabrica/browser-capture-captions/blob/main/";
 
 export const CODE = {
   "bench-overview": ["index.html", "page/app.js"],

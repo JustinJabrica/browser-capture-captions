@@ -19,13 +19,17 @@ what was said while it recorded, timed on the recording. A finished take can
 be transcribed again, without a clock to keep up with. The subtitles can be
 downloaded as files, written into a copy of the recording as a track, or
 drawn into its picture: see [Live captions](#live-captions) and
-[Transcripts and subtitles](#transcripts-and-subtitles). Publishing the bench
-on GitHub Pages comes next (see the [Roadmap](#roadmap)). Most of this page
+[Transcripts and subtitles](#transcripts-and-subtitles). It's published on
+GitHub Pages too, at <https://justinjabrica.github.io/browser-capture-captions/>, where it needs
+nothing installed: see [On GitHub Pages](#on-github-pages). Most of this page
 still describes the capture bench as it came over.
 
 It's plain modern JavaScript, with no framework, bundler or build step.
 
 ## Quick start
+
+The published copy, <https://justinjabrica.github.io/browser-capture-captions/>,
+needs nothing installed. To run the bench from this repo:
 
 ```sh
 npm install
@@ -953,6 +957,46 @@ differ. That's what the saved takes and the Takes view are for.
 - **The screen picker can't be skipped in Firefox or Safari**, so screen
   capture there is tested by hand.
 
+## On GitHub Pages
+
+<https://justinjabrica.github.io/browser-capture-captions/> is the bench as
+`npm run build:site` builds it into `_site/`: `index.html`, `guide.html`,
+`page/`, `src/`, `vendor/` and the two sample files, as they are in the repo,
+plus two things a static host needs that the local server does without.
+`.github/workflows/pages.yml` builds and publishes it on every push to
+`main`.
+
+- **No models.** `models/index.json` is a file that lists none, so the page
+  fetches the model it uses from the Hugging Face hub (41 MB for the default
+  one) and the browser keeps it.
+- **Cross-origin isolation from a service worker.** GitHub Pages can't send
+  the `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` headers
+  the local server sends, and without them transcription runs on one thread.
+  The built pages load
+  [coi-serviceworker](https://github.com/gzuidhof/coi-serviceworker) first,
+  a service worker that adds the headers to every response. On the first
+  visit the page reloads itself once, so the service worker can serve it, and
+  is isolated from then on. The pages ask it for `require-corp`, as the
+  local server sends: its default outside Chrome and Firefox is
+  `credentialless`, which Safari doesn't support.
+- **It's served over `https://`**, so it's a secure context on any device:
+  phones and other computers can open it without the certificates
+  [Other devices on your network](#other-devices-on-your-network) describes.
+
+To try the built site the way Pages serves it, without the isolation
+headers:
+
+```sh
+npm run build:site
+SITE=1 npm start       # serves _site/ at http://127.0.0.1:8100/, without COOP/COEP
+npm test               # the end-to-end tests, against it
+```
+
+With `SITE=1`, `models/` still comes from this repo's `models/`, so the
+caption tests use a downloaded model rather than the hub. The repo's
+Settings > Pages > Source has to be **GitHub Actions** for the workflow to
+publish.
+
 ## Other devices on your network
 
 Phones, tablets and other computers can use the bench served from this
@@ -1181,8 +1225,11 @@ src/speech/transcriber.js     live transcription: interim and final segments, in
 src/speech/registry.js        every model and detector the bench can select, as data
 src/speech/model-env.js       points Transformers.js at this server or the hub, one model at a time
 src/speech/align/             word times by forced alignment (wav2vec2)
-server.mjs                    static server; HTTPS=1 for other devices
+server.mjs                    static server; HTTPS=1 for other devices; SITE=1 serves _site/ as GitHub Pages would
 scripts/vendor.mjs            copies the libraries the pages load from node_modules into vendor/ (after npm install)
+scripts/build-site.mjs        the site GitHub Pages publishes, into _site/, with the service worker for isolation
+scripts/lib/site-files.mjs    every file the pages load: what the site publishes and the blocker check matches
+.github/workflows/pages.yml   builds the site and publishes it on GitHub Pages, on every push to main
 scripts/download-model.mjs    speech models into models/, from the registry
 scripts/make-cert.mjs         a local certificate authority, and the server's certificate it issues, for HTTPS=1
 scripts/make-fixtures.mjs     the test pattern as .y4m, for Chromium's fake camera
@@ -1192,14 +1239,14 @@ scripts/install-chrome-for-testing.mjs  Chrome for Testing into Puppeteer's cach
 test/unit/                    node --test: WAV, pattern, metrics, sound, constraints, types, codecs, probing,
                               the speech engine's pure parts, the tap feed, the timeline, subtitles,
                               subtitles written into a file, the second pass, a caption's layout,
-                              what the pages load
+                              what the pages load, the site built for GitHub Pages
 test/engine.test.mjs          the speech model in Node, on the fixtures
 test/lib/matroska.mjs         reads a WebM or Matroska file's subtitle cues from its bytes, for the tests
 test/browser.test.mjs         end-to-end, in real browsers
 test/fixtures/                fox.wav and two-sentences.wav (from automatic-speech-recognition-and-diarization)
 ```
 
-There are three runtime dependencies:
+There are three runtime dependencies, and a fourth for the published site:
 
 - [Mediabunny](https://mediabunny.dev/), for reading and remuxing the
   recorded files, and for writing the WebCodecs recorder's packets into a
@@ -1208,6 +1255,9 @@ There are three runtime dependencies:
   ONNX Runtime Web inside it, which runs the speech model.
 - [@echogarden/fvad-wasm](https://www.npmjs.com/package/@echogarden/fvad-wasm),
   WebRTC's voice activity detector as WebAssembly.
+- [coi-serviceworker](https://github.com/gzuidhof/coi-serviceworker), the
+  service worker that makes the copy on GitHub Pages cross-origin isolated
+  (see [On GitHub Pages](#on-github-pages)). Only the built site loads it.
 
 The pages load them from `vendor/` (30 MB, most of it ONNX Runtime's
 WebAssembly build), which `scripts/vendor.mjs` fills from the installed
@@ -1230,7 +1280,8 @@ npm run test:engine
 
 # End to end in a real browser: start the server, then in another terminal.
 # The caption tests need whisper-tiny.en in models/, and are skipped without it;
-# the word-times test needs whisper-tiny.en-timestamped as well.
+# the word-times test needs whisper-tiny.en-timestamped as well. To test the
+# site built for GitHub Pages instead: npm run build:site, then SITE=1 npm start.
 npm start
 npm test               # Firefox
 npm run test:edge      # Microsoft Edge
@@ -1299,7 +1350,9 @@ environment variables change that and other settings:
   3. Done: the subtitles written into a copy of the saved file as a track.
   4. Done: a second, slower transcription of the finished take, and
      captions drawn into the picture.
-  5. The bench published on GitHub Pages.
+  5. Done: the bench published on GitHub Pages, at
+     <https://justinjabrica.github.io/browser-capture-captions/>, cross-origin isolated by a
+     service worker.
   6. Later: speaker labels, other languages, streaming models.
 - **The WebCodecs recorder, further** (it exists now: see
   [Two recorders](#two-recorders-mediarecorder-and-webcodecs)):

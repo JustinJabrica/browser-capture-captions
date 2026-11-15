@@ -25,12 +25,17 @@
   function check() {
     if (document.documentElement.dataset.ready) return;
     const file = location.protocol === "file:";
+    // The bench's own server (npm start), on this computer or the local network, rather than a
+    // static host such as GitHub Pages, where npm start means nothing.
+    const local = location.port === "8100" || /^(localhost|127\.|\[::1\]|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname);
     const title = file ? "Open the bench from its server" : "The page's code didn't start";
     const hint = file
       ? `This page was opened as a file, and browsers only run its code when it comes from a server. Run <code>npm start</code> in the project folder, then open <a href="${ADDRESS}">${ADDRESS}</a>.`
       : errors.length
         ? "Reload with Ctrl+Shift+R (Cmd+Shift+R on a Mac). If a file failed to load, an ad or tracker blocker may have blocked it: turn it off for this page. The first problem the browser reported is below, and the console (F12) has the rest."
-        : `No error was reported. Reload with Ctrl+Shift+R, and check that this is the bench's own server: <code>npm start</code> prints its address (${ADDRESS}).`;
+        : local
+          ? `No error was reported. Reload with Ctrl+Shift+R, and check that this is the bench's own server: <code>npm start</code> prints its address (${ADDRESS}).`
+          : "No error was reported. Reload with Ctrl+Shift+R (Cmd+Shift+R on a Mac). An ad or tracker blocker may have stopped a file without saying so: turn it off for this page.";
     const alert = document.createElement("div");
     alert.className = "alert";
     alert.setAttribute("role", "alert");

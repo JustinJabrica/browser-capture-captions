@@ -6,6 +6,7 @@
     "postinstall": "node scripts/vendor.mjs",
     "vendor": "node scripts/vendor.mjs",
     "start": "node server.mjs",
+    "build:site": "node scripts/build-site.mjs",
     "test": "node test/browser.test.mjs firefox",
     "test:edge": "node test/browser.test.mjs edge",
     "test:chrome": "node test/browser.test.mjs chrome",
@@ -24,6 +25,7 @@
   "dependencies": {
     "@echogarden/fvad-wasm": "0.2.0",
     "@huggingface/transformers": "4.3.2",
+    "coi-serviceworker": "0.1.7",
     "mediabunny": "1.65.1"
   },
   "devDependencies": {

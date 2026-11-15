@@ -19,6 +19,12 @@
 // Sends cross-origin isolation headers, so the page can run transcription
 // with multi-threaded WebAssembly; capture works with or without them.
 //
+// SITE=1 serves the site npm run build:site made in _site/ instead, the way
+// GitHub Pages does: without those headers, so the service worker the built
+// pages load has to make them cross-origin isolated. As a convenience for
+// testing it, models/ (and models/index.json) still come from this repo's
+// models/, where GitHub Pages has none and the page goes to the Hugging Face hub.
+//
 // GET models/index.json lists the speech models downloaded into models/
 // (npm run download-model): { models: [folder] }. It is worked out from the
 // disk at each request and always answers 200, so the page can ask which
@@ -30,14 +36,16 @@
 
 import { createServer as createHttp } from "node:http";
 import { createServer as createHttps } from "node:https";
-import { createReadStream, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { networkInterfaces } from "node:os";
 import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { modelsIndex } from "./scripts/lib/model-store.mjs";
 
-const root = resolve(fileURLToPath(new URL(".", import.meta.url)));
+const repo = resolve(fileURLToPath(new URL(".", import.meta.url)));
+const site = Boolean(process.env.SITE);
+const root = site ? join(repo, "_site") : repo;
 const port = Number(process.argv[2] ?? process.env.PORT ?? 8100);
 const host = process.env.HOST ?? "127.0.0.1";
 const https = Boolean(process.env.HTTPS);
@@ -85,7 +93,7 @@ async function handle(req, res) {
   if (path !== root && !path.startsWith(root + sep)) return send(403, "Forbidden");
   if (url.pathname === "/models/index.json") {
     const body = JSON.stringify(await modelsIndex().catch(() => ({ models: [] })));
-    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cross-Origin-Resource-Policy": "same-origin", "Cache-Control": "no-store" });
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", ...(site ? {} : { "Cross-Origin-Resource-Policy": "same-origin" }), "Cache-Control": "no-store" });
     return res.end(req.method === "HEAD" ? undefined : body);
   }
   // Nothing whose name starts with a dot is served (.git, and .cert with its keys above all):
@@ -93,7 +101,12 @@ async function handle(req, res) {
   // certificate authority's certificate (scripts/make-cert.mjs), which is public, at /ca.pem,
   // for other devices to install and trust.
   const ca = url.pathname === "/ca.pem";
-  if (ca) path = join(root, ".cert", "ca.pem");
+  if (ca) path = join(repo, ".cert", "ca.pem");
+  else if (site && url.pathname.startsWith("/models/")) {
+    const models = join(repo, "models");
+    path = resolve(repo, `.${decodeURIComponent(url.pathname)}`);
+    if (!path.startsWith(models + sep) || path.slice(models.length).split(sep).some((part) => part.startsWith("."))) return send(403, "Forbidden");
+  }
   else if (path.slice(root.length).split(sep).some((part) => part.startsWith("."))) return send(403, "Forbidden");
 
   let info = await stat(path).catch(() => null);
@@ -112,9 +125,13 @@ async function handle(req, res) {
     // As a CA certificate, Safari offers to install it as a profile.
     "Content-Type": ca ? "application/x-x509-ca-cert" : (TYPES[extname(path).toLowerCase()] ?? "application/octet-stream"),
     ETag: etag,
-    "Cross-Origin-Opener-Policy": "same-origin",
-    "Cross-Origin-Embedder-Policy": "require-corp",
-    "Cross-Origin-Resource-Policy": "same-origin",
+    ...(site
+      ? {}
+      : {
+          "Cross-Origin-Opener-Policy": "same-origin",
+          "Cross-Origin-Embedder-Policy": "require-corp",
+          "Cross-Origin-Resource-Policy": "same-origin",
+        }),
     "Cache-Control": "no-cache",
     "Last-Modified": info.mtime.toUTCString(),
     "Accept-Ranges": "bytes",
@@ -151,12 +168,17 @@ async function handle(req, res) {
   createReadStream(path, { start, end }).pipe(res);
 }
 
+if (site && !existsSync(join(root, "index.html"))) {
+  console.error("SITE=1 serves _site/: run npm run build:site first.");
+  process.exit(1);
+}
+
 let server;
 if (https) {
   let key, cert;
   try {
-    key = readFileSync(join(root, ".cert", "key.pem"));
-    cert = readFileSync(join(root, ".cert", "cert.pem"));
+    key = readFileSync(join(repo, ".cert", "key.pem"));
+    cert = readFileSync(join(repo, ".cert", "cert.pem"));
   } catch {
     console.error("HTTPS=1 needs a certificate: run npm run cert first.");
     process.exit(1);
@@ -168,7 +190,7 @@ if (https) {
 
 server.listen(port, host, () => {
   const scheme = https ? "https" : "http";
-  console.log(`Serving ${root}`);
+  console.log(`Serving ${root}${site ? " (as GitHub Pages would: no cross-origin isolation headers)" : ""}`);
   console.log(`Capture bench: ${scheme}://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}/`);
   if (host === "0.0.0.0") {
     for (const list of Object.values(networkInterfaces())) {

@@ -239,7 +239,9 @@ models hear English only.
   requests.
 - `model` is `automatic` at first: base.en when it's on the server, else
   tiny.en, the smallest download. For any other language, detection
-  included, it picks the multilingual base or tiny the same way.
+  included, it picks the multilingual base (77 MB), from the hub when it
+  isn't on the server: the multilingual tiny finds the language, but its
+  French is mostly wrong.
 
 **Settings** (the Captions tab; each has its explanation on the bench):
 `captions`, `model`, `language`, `device` (WebAssembly or WebGPU), the speech detector
@@ -305,8 +307,12 @@ Cantonese), this browser's own language, or **detect it from the speech**.
 LibriVox recording): whisper-base found French at 0.98 in Firefox, Edge and
 Node, and its captions differed from the words said in 8 of 19
 (LibriVox's name, which it hears as "les prévoxes", accounts for most).
-whisper-tiny found French too, then looped ("de l'exécie de l'exécie..."),
-which the clean-up drops.
+whisper-tiny found French too (0.96), but wrote "C'est une option de la
+société. Ceci est un régiste tremble…" (in Node, over the whole clip, it
+looped: "de l'exécie de l'exécie…"), which is why automatic takes base for
+any language but English, from the hub when it isn't on the server. With
+no models on the server, as on GitHub Pages, base came from the hub and
+captioned the French take in 12 s.
 
 ## Transcripts and subtitles
 

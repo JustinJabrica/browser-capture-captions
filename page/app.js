@@ -259,7 +259,7 @@ const CAPTION_PARAMS = [
     label: "model",
     type: "select",
     def: "auto",
-    options: [["auto", "automatic: base if it's here, else tiny (.en for English)"], ...ofKind("asr").map((m) => [m.id, `${m.label} · ${m.loadMB?.wasm ?? m.loadMB?.webgpu} MB`])],
+    options: [["auto", "automatic: base.en if it's here, else tiny.en; base for other languages"], ...ofKind("asr").map((m) => [m.id, `${m.label} · ${m.loadMB?.wasm ?? m.loadMB?.webgpu} MB`])],
     desc: "The speech model. Bigger models make fewer mistakes and take longer. The .en models, Distil-Whisper and the CTC models hear English only; Whisper tiny, base and small hear 99 languages, and large-v3-turbo 100. One that isn't on this server is downloaded from the Hugging Face hub the first time, and the browser keeps it.",
   },
   {

@@ -48,12 +48,15 @@ export function wantedLanguage(choice = "en") {
 const isEnglish = (lang) => /^en\b/i.test(lang);
 
 // "auto": Whisper base.en when it's on this server, else tiny.en, the
-// smallest download from the hub; for any language but English (detection
-// included), the multilingual base or tiny the same way.
+// smallest download from the hub. For any language but English (detection
+// included), the multilingual base, from wherever it is: the multilingual
+// tiny finds the language, but outside English its text is mostly wrong
+// (librivox-fr.wav's "Ceci est un enregistrement LibriVox" comes out as
+// "Ceci est un régiste tremble"), and over a whole clip it can loop.
 export function pickModel(choice, local, lang = "en") {
   if (choice !== "auto") return choice;
-  const [base, tiny] = isEnglish(lang) ? ["whisper-base.en", "whisper-tiny.en"] : ["whisper-base", "whisper-tiny"];
-  return local.includes(modelDir(resolve(base))) ? base : tiny;
+  if (!isEnglish(lang)) return "whisper-base";
+  return local.includes(modelDir(resolve("whisper-base.en"))) ? "whisper-base.en" : "whisper-tiny.en";
 }
 
 // overlay: the text over the preview; list: the transcript's <ol>; chip: the
